@@ -1,0 +1,210 @@
+// FC Frick Tournament Backend — Prisma schema
+// Local dev uses SQLite; schema kept Postgres-compatible for production
+// (switch `provider` to "postgresql" and set DATABASE_URL accordingly).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  REFEREE
+}
+
+enum UserStatus {
+  APPROVED
+  PENDING
+  REJECTED
+}
+
+enum TournamentStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  FINISHED
+}
+
+enum SlotStatus {
+  PENDING
+  WAITING_READY
+  RUNNING
+  FINISHED
+}
+
+enum MatchPhase {
+  GROUP
+  ROUND_OF_16
+  QUARTERFINAL
+  SEMIFINAL
+  THIRD_PLACE
+  FINAL
+}
+
+enum MatchStatus {
+  SCHEDULED
+  READY
+  RUNNING
+  FINISHED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         Role
+  status       UserStatus
+  createdAt    DateTime   @default(now())
+  matches      Match[]
+
+  @@index([status])
+}
+
+model Tournament {
+  id               String           @id @default(cuid())
+  name             String
+  startAt          DateTime
+  matchDurationMin Int
+  transitionMin    Int
+  pitchCount       Int
+  status           TournamentStatus @default(DRAFT)
+  createdAt        DateTime         @default(now())
+  categories       Category[]
+  pitches          Pitch[]
+  slots            Slot[]
+  matches          Match[]
+}
+
+model Pitch {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  name         String
+  sortOrder    Int
+  matches      Match[]
+
+  @@index([tournamentId])
+}
+
+model Category {
+  id                 String     @id @default(cuid())
+  tournamentId       String
+  tournament         Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  name               String
+  qualifiersPerGroup Int?
+  knockoutGenerated  Boolean    @default(false)
+  groups             Group[]
+  teams              Team[]
+  matches            Match[]
+
+  @@index([tournamentId])
+}
+
+model Group {
+  id         String   @id @default(cuid())
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  name       String
+  // Manual tiebreak order (drawing of lots), team ids as JSON string; null if none.
+  tiebreak   String?
+  teams      Team[]
+  matches    Match[]
+
+  @@index([categoryId])
+}
+
+model Team {
+  id         String   @id @default(cuid())
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  groupId    String?
+  group      Group?   @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  name       String
+  homeMatches Match[] @relation("HomeTeam")
+  awayMatches Match[] @relation("AwayTeam")
+  goals       Goal[]
+
+  @@index([categoryId])
+  @@index([groupId])
+}
+
+model Slot {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  index        Int
+  plannedStart DateTime
+  actualStart  DateTime?
+  status       SlotStatus @default(PENDING)
+  matches      Match[]
+
+  @@unique([tournamentId, index])
+  @@index([tournamentId])
+}
+
+model Match {
+  id           String      @id @default(cuid())
+  tournamentId String
+  tournament   Tournament  @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  categoryId   String
+  category     Category    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  groupId      String?
+  group        Group?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  slotId       String?
+  slot         Slot?       @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  pitchId      String?
+  pitch        Pitch?      @relation(fields: [pitchId], references: [id], onDelete: SetNull)
+  refereeId    String?
+  referee      User?       @relation(fields: [refereeId], references: [id], onDelete: SetNull)
+  phase        MatchPhase
+  status       MatchStatus @default(SCHEDULED)
+  homeTeamId   String?
+  homeTeam     Team?       @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: SetNull)
+  awayTeamId   String?
+  awayTeam     Team?       @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: SetNull)
+  // Knockout source descriptors, stored as JSON strings (SQLite has no Json type).
+  homeSource   String?
+  awaySource   String?
+  scoreHome    Int         @default(0)
+  scoreAway    Int         @default(0)
+  pensHome     Int?
+  pensAway     Int?
+  // Ordering within a knockout round, used to route semifinal losers to third place.
+  bracketSlot  Int?
+  finishedAt   DateTime?
+  goals        Goal[]
+
+  @@index([tournamentId])
+  @@index([categoryId])
+  @@index([groupId])
+  @@index([slotId])
+  @@index([refereeId])
+}
+
+model Goal {
+  id        String   @id @default(cuid())
+  matchId   String
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  createdBy String
+
+  @@index([matchId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  action    String
+  targetId  String
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([targetId])
+}

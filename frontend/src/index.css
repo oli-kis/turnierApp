@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+/* ---- Design tokens: "Anzeigetafel" (chalk lines, hand-flipped scoreboard) ---- */
+@theme {
+  --color-chalk: #f6f6f2; /* page background — cool paper white */
+  --color-ink: #16211b; /* text — green-cast near-black, AAA on chalk */
+  --color-pine: #1a5a48; /* primary: buttons, links, active states */
+  --color-pine-deep: #0e3d30; /* hover, headers */
+  --color-live: #e8590c; /* ONLY live: running clock, LIVE tag, delays, alerts */
+  --color-line: #d8dad3; /* borders, table rules — chalk line grey */
+  --color-win: #1f7a33; /* result glyphs only */
+  --color-loss: #b3261e; /* result glyphs only */
+
+  --font-display: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --radius-card: 8px;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-chalk);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background-color: var(--color-chalk);
+  }
+
+  /* Tabular numerals everywhere data/times/scores appear (no digit jitter). */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  .font-score {
+    font-family: var(--font-display);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+
+  /* Visible keyboard focus (admin uses a laptop). */
+  :focus-visible {
+    outline: 3px solid var(--color-pine);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  button {
+    font-family: inherit;
+  }
+}
+
+/* Ambient motion only where the spec allows it; kill it under reduced-motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Ready-state pulse (dashboard/referee waiting) — reserved live signal. */
+@keyframes ready-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.animate-ready-pulse {
+  animation: ready-pulse 1.4s ease-in-out infinite;
+}
+
+/* Score tick on change. */
+@keyframes score-tick {
+  0% {
+    transform: translateY(-0.12em);
+    opacity: 0.4;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-score-tick {
+  animation: score-tick 0.22s ease-out;
+}
