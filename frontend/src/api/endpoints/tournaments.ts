@@ -55,6 +55,19 @@ export function finishTournament(id: string) {
   return apiRequest(`/tournaments/${id}/finish`, { method: "POST" });
 }
 
+const FinishRunningResponse = z.object({
+  finished: z.array(z.string()),
+  skipped: z.array(z.object({ matchId: z.string(), reason: z.string() })),
+});
+export type FinishRunningResult = z.infer<typeof FinishRunningResponse>;
+
+export function finishRunningMatches(id: string) {
+  return apiRequest(`/tournaments/${id}/matches/finish-running`, {
+    method: "POST",
+    schema: FinishRunningResponse,
+  });
+}
+
 export function getSlots(id: string) {
   return apiRequest(`/tournaments/${id}/slots`, { schema: SlotsResponse });
 }

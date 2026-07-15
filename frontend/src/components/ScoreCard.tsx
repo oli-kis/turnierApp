@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { MatchStatus } from "../api/types";
-import { secondsSince } from "../lib/time";
+import type { MatchStatus, TournamentStatus } from "../api/types";
+import { secondsSince, formatSlotTime } from "../lib/time";
 import { LiveTag } from "./Tag";
 
 export type ScoreCardSize = "sm" | "md" | "lg";
@@ -15,7 +15,12 @@ interface ScoreCardProps {
   actualStart?: string | null;
   matchDurationMin?: number;
   size?: ScoreCardSize;
-  /** Extra note under the card (estimated start, phase, etc.). */
+  /** Kickoff times; shown as the eyebrow when the match is not running (item 1). */
+  plannedStart?: string | null;
+  estimatedStart?: string | null;
+  /** When set and not RUNNING, suppresses the LIVE badge/clock (item 9 defence). */
+  tournamentStatus?: TournamentStatus;
+  /** Extra note under the card (phase, etc.), used when no kickoff time applies. */
   eyebrowRight?: string | null;
 }
 
@@ -40,19 +45,31 @@ export function ScoreCard({
   actualStart,
   matchDurationMin,
   size = "md",
+  plannedStart,
+  estimatedStart,
+  tournamentStatus,
   eyebrowRight,
 }: ScoreCardProps) {
   const s = sizeClasses[size];
-  const running = status === "RUNNING";
+  const running =
+    status === "RUNNING" && (tournamentStatus === undefined || tournamentStatus === "RUNNING");
   const progress = useMatchProgress(running ? actualStart : null, matchDurationMin);
+  const kickoff =
+    plannedStart || estimatedStart ? formatSlotTime(plannedStart, estimatedStart) : null;
 
   return (
     <div className={`overflow-hidden rounded-[var(--radius-card)] border border-[var(--color-line)] bg-white ${s.pad}`}>
-      <div className="mb-1 flex items-center justify-between">
+      <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide text-[var(--color-pine)]">
           {pitch ?? "—"}
         </span>
-        {running ? <LiveTag /> : eyebrowRight ? (
+        {running ? (
+          <LiveTag />
+        ) : kickoff ? (
+          <span className="whitespace-nowrap text-sm font-bold tabular-nums text-[var(--color-ink)]">
+            {kickoff}
+          </span>
+        ) : eyebrowRight ? (
           <span className="text-xs font-medium text-[var(--color-ink)]/70 tnum">{eyebrowRight}</span>
         ) : null}
       </div>

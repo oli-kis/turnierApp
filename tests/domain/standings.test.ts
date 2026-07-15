@@ -133,6 +133,40 @@ describe("computeStandings", () => {
     expect(a.played).toBe(0);
   });
 
+  // improvements.md item 4 (a): the 3/0/0/0 case must not fall back to creation
+  // order. The winning team is created LAST here to prove the sort really runs.
+  it("ranks a lone 3-point team first regardless of creation order", () => {
+    const order: TeamRef[] = [
+      { id: "a", name: "A" },
+      { id: "b", name: "B" },
+      { id: "c", name: "C" },
+      { id: "d", name: "D" }, // created last, but wins its match
+    ];
+    const matches = [m("d", "a", 1, 0)]; // D 3pts, everyone else 0
+    const { rows } = computeStandings(order, matches);
+    expect(rows[0]!.teamId).toBe("d");
+    expect(rows[0]!.points).toBe(3);
+    expect(rows.slice(1).every((r) => r.points === 0)).toBe(true);
+  });
+
+  // improvements.md item 4 (c): a and b are identical on points (3), GD (0) and
+  // goals scored (2) — only the head-to-head result separates them.
+  it("breaks an equal points+GD+GF tie by head-to-head", () => {
+    const three: TeamRef[] = [
+      { id: "a", name: "A" },
+      { id: "b", name: "B" },
+      { id: "c", name: "C" },
+    ];
+    const matches = [
+      m("a", "b", 2, 1), // a beats b head-to-head
+      m("c", "a", 1, 0), // a loses to c
+      m("b", "c", 1, 0), // b beats c
+    ];
+    // a: 3pts GF2 GA2 GD0 ; b: 3pts GF2 GA2 GD0 ; c: 3pts GF1 GA1 GD0.
+    const { rows } = computeStandings(three, matches);
+    expect(rows.map((r) => r.teamId)).toEqual(["a", "b", "c"]);
+  });
+
   it("assigns sequential ranks", () => {
     const matches = [m("a", "b", 1, 0), m("c", "d", 1, 0)];
     const { rows } = computeStandings(teams, matches);

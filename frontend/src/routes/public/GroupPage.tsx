@@ -55,6 +55,9 @@ export function GroupPage() {
                 scoreAway={m.scoreAway}
                 status={m.status}
                 pitch={m.pitch?.name}
+                estimatedStart={m.estimatedStart}
+                plannedStart={m.slot?.plannedStart}
+                tournamentStatus={tournament?.status}
               />
             ))}
           </div>

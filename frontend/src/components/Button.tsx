@@ -10,7 +10,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const base =
-  "inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed select-none";
+  "inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-pine)] focus-visible:ring-offset-2";
 
 const variants: Record<Variant, string> = {
   // Touch floor: 48px everywhere (h-12). Referee actions use size="xl" (64px).
@@ -28,6 +28,14 @@ const sizes: Record<Size, string> = {
   xl: "min-h-16 px-6 text-lg", // ≥64px for pitchside referee actions
 };
 
+/**
+ * Shared button styling, so link-shaped actions (React Router `<Link>`) can carry
+ * the exact same affordance as `<Button>` without being real buttons.
+ */
+export function buttonClass(variant: Variant = "primary", size: Size = "md", className = ""): string {
+  return `${base} ${variants[variant]} ${sizes[size]} ${className}`;
+}
+
 export function Button({
   variant = "primary",
   size = "md",
@@ -36,7 +44,7 @@ export function Button({
   ...rest
 }: ButtonProps) {
   return (
-    <button className={`${base} ${variants[variant]} ${sizes[size]} ${className}`} {...rest}>
+    <button className={buttonClass(variant, size, className)} {...rest}>
       {children}
     </button>
   );

@@ -4,6 +4,7 @@ import { prisma } from "../db/client.js";
 import { Errors } from "../lib/errors.js";
 import { requireAdmin } from "../plugins/auth.js";
 import { getMatchOr404 } from "../lib/loaders.js";
+import { estimatedStartsBySlot } from "../lib/estimates.js";
 import { maybeStartSlot } from "../services/slotService.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
@@ -38,7 +39,15 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
       include: { slot: true, pitch: true, homeTeam: true, awayTeam: true },
       orderBy: [{ slot: { index: "asc" } }, { pitchId: "asc" }],
     });
-    return { matches };
+    // Attach each match's estimated kickoff (computed, never persisted) so every
+    // match rendering can show the time. slot carries plannedStart already.
+    const est = await estimatedStartsBySlot(id);
+    return {
+      matches: matches.map((m) => ({
+        ...m,
+        estimatedStart: m.slotId ? est.get(m.slotId) ?? null : null,
+      })),
+    };
   });
 
   // Public match detail incl. goals.

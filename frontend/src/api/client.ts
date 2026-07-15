@@ -7,6 +7,8 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** Optional structured payload from the backend error (e.g. affected ids). */
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -77,11 +79,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions<T> = {
   }
 
   if (!res.ok) {
-    const err = (payload as { error?: { code?: string; message?: string } })?.error;
+    const err = (payload as { error?: { code?: string; message?: string; details?: unknown } })?.error;
     const apiError = new ApiError(
       res.status,
       err?.code ?? "ERROR",
       err?.message ?? "Etwas ist schiefgelaufen",
+      err?.details,
     );
     handleGlobal(apiError);
     throw apiError;

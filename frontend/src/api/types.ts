@@ -115,11 +115,21 @@ export const MatchListItemSchema = z.object({
   status: MatchStatusSchema,
   categoryId: z.string().optional(),
   groupId: z.string().nullish(),
+  refereeId: z.string().nullish(),
   scoreHome: z.number(),
   scoreAway: z.number(),
   pensHome: z.number().nullish(),
   pensAway: z.number().nullish(),
-  slot: z.object({ id: z.string(), index: z.number(), status: SlotStatusSchema }).nullish(),
+  // Kickoff time: slot carries the planned start, estimatedStart is computed.
+  estimatedStart: z.string().nullish(),
+  slot: z
+    .object({
+      id: z.string(),
+      index: z.number(),
+      status: SlotStatusSchema,
+      plannedStart: z.string().nullish(),
+    })
+    .nullish(),
   pitch: z.object({ id: z.string(), name: z.string() }).nullish(),
   homeTeam: TeamRef,
   awayTeam: TeamRef,
@@ -271,6 +281,7 @@ export const TeamMatchSchema = z.object({
   status: MatchStatusSchema,
   pitch: z.string().nullish(),
   slotIndex: z.number().nullish(),
+  plannedStart: z.string().nullish(),
   estimatedStart: z.string().nullish(),
   homeTeam: z.string().nullish(),
   awayTeam: z.string().nullish(),

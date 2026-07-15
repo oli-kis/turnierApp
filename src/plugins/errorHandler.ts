@@ -7,9 +7,13 @@ export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler(
     (error: FastifyError, _request: FastifyRequest, reply: FastifyReply) => {
       if (error instanceof AppError) {
-        return reply
-          .status(error.statusCode)
-          .send({ error: { code: error.code, message: error.message } });
+        return reply.status(error.statusCode).send({
+          error: {
+            code: error.code,
+            message: error.message,
+            ...(error.details !== undefined ? { details: error.details } : {}),
+          },
+        });
       }
 
       if (error instanceof ZodError) {

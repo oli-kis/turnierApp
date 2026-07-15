@@ -18,3 +18,7 @@ export function approveReferee(id: string) {
 export function rejectReferee(id: string) {
   return apiRequest(`/admin/referees/${id}/reject`, { method: "POST" });
 }
+
+export function deleteReferee(id: string) {
+  return apiRequest<void>(`/admin/referees/${id}`, { method: "DELETE" });
+}

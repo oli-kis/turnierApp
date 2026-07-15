@@ -63,8 +63,10 @@ Every backend endpoint has exactly one home. When implementing, check off agains
 | GET `/auth/me` | App bootstrap when a token exists |
 | GET `/admin/referees?status=` | Admin → referee approval queue |
 | POST `/admin/referees/:id/approve` `/reject` | Approval queue row actions |
-| POST/GET/PATCH/DELETE `/tournaments*` | Admin tournament list + settings form; public tournament picker |
-| POST `/tournaments/:id/start` `/finish` | Admin live dashboard header |
+| DELETE `/admin/referees/:id` | Approval queue delete action; on `409 REFEREE_HAS_ASSIGNMENTS` show the blocking matches (`error.details.matches`) as links to the match editor |
+| POST/GET/PATCH/DELETE `/tournaments*` | Admin tournament list + settings form; public tournament picker. DELETE via typed-name confirm dialog (allowed unless `RUNNING` → `409 TOURNAMENT_RUNNING`) |
+| POST `/tournaments/:id/start` `/finish` | Admin live dashboard header. `/finish` on `409 MATCHES_STILL_RUNNING` opens the finish-running action from the error state |
+| POST `/tournaments/:id/matches/finish-running` | Admin live dashboard header "Laufende beenden"; confirm dialog lists running matches, reports skipped `PENALTIES_REQUIRED` draws afterwards |
 | Category/Group/Team CRUD | Admin setup screen (tree editor) |
 | PATCH `/groups/:id/tiebreak` | Admin standings view, only shown when `tieUnresolved` |
 | POST `/tournaments/:id/schedule/generate` | Admin setup → "Spielplan erstellen" step, renders returned rest stats before the admin confirms publishing |
@@ -129,10 +131,10 @@ Route names and UI copy are **German** (de-CH: 24-h times, `14:30`, no AM/PM). C
 
 ### Admin (`/admin`)
 
-- `/admin` — Tournament list, create form.
+- `/admin` — Tournament list, create form. Each card's **Setup** and **Live** are real buttons (the contextually relevant one primary: Live while `RUNNING`, else Setup); no link-styled actions. Delete is available unless `RUNNING` and opens a typed-name confirmation dialog — deleting a tournament destroys a whole day's results, so a plain OK is not enough.
 - `/admin/t/:id/setup` — Setup as a checklist, not a wizard (admins jump around): 1. Grunddaten 2. Kategorien/Gruppen/Teams (inline-editable tree) 3. Schiedsrichter zuweisen (per-slot table, dropdown per match, conflict-checked) 4. Spielplan. The generate button shows the returned rest stats (min/max/avg Pause pro Team) in a confirm dialog before the schedule is accepted. Invalid bracket sizes (`INVALID_BRACKET_SIZE`) render inline at the `qualifiersPerGroup` field with the valid options from the error message.
-- `/admin/t/:id/live` — The dashboard. One card per pitch for the active slot: teams, referee name, ready state (pulsing until ready), live score, force-ready button. Header: current delay vs. plan, „Slot n von m", tournament start/finish controls. Next slot preview underneath with assignment gaps highlighted in the live accent color — an unassigned referee 10 minutes before a slot is the #1 operational failure.
-- `/admin/referees` — Approval queue; badge in the nav on `referee.registered`.
+- `/admin/t/:id/live` — The dashboard. One card per pitch for the active slot: teams, referee name, ready state (pulsing until ready), live score, force-ready button. Header: current delay vs. plan, „Slot n von m", tournament start/finish controls, and a **„Laufende beenden (n)"** action that force-finishes every running match (confirm dialog lists them; reports skipped knockout draws needing penalties). Finishing the tournament while matches run surfaces the same action from the `409 MATCHES_STILL_RUNNING` state. Next slot preview underneath with assignment gaps highlighted in the live accent color — an unassigned referee 10 minutes before a slot is the #1 operational failure.
+- `/admin/referees` — Approval queue; badge in the nav on `referee.registered`. Each row has a delete action (confirm dialog); on `409 REFEREE_HAS_ASSIGNMENTS` the blocking matches are listed as links to the match editor to reassign first.
 - `/admin/t/:id/spiel/:matchId` — Match editor: reassign pitch/slot/referee, post-hoc result correction with a typed-confirmation dialog („SF1 korrigieren").
 
 ## Design System
@@ -176,7 +178,8 @@ The **live score card**: pitch name as an eyebrow, two team names, the tabular s
 - Every list has a designed empty state that says what to do next („Noch keine Teams — füge das erste Team hinzu").
 - Errors state what happened and the way out, in the interface's voice, no apologies: „Spiel läuft nicht mehr — Tor wurde nicht gezählt."
 - Loading: skeletons for tables/cards, never spinners on full pages.
-- Times: always show estimated start when it differs from planned, formatted „14:42 (geplant 14:30)".
+- Times: always show estimated start when it differs from planned, formatted „14:42 (geplant 14:30)". The kickoff time is the single most important datum for players/parents, so **every** match rendering shows it in display weight (tabular): `MatchRow` leads with it, `ScoreCard` shows it as the eyebrow when not running, and the match list / team-day endpoints carry each match's `plannedStart` + `estimatedStart` so no view can forget it.
+- LIVE guard (defence in depth): the LIVE badge and count-up clock render only when `match.status === "RUNNING"` **and** the tournament is `RUNNING`. `MatchRow` and `ScoreCard` take an optional `tournamentStatus` for this — a finished tournament must never show a live match.
 
 ## Open Items (v2)
 

@@ -207,6 +207,7 @@ Base path `/api`. `A` = admin JWT, `R` = approved referee JWT (assigned to the m
 | GET | `/admin/referees?status=` | A | List referees; `?status=PENDING` backs the admin approval view |
 | POST | `/admin/referees/:id/approve` | A | `PENDING → APPROVED`, unlocks login |
 | POST | `/admin/referees/:id/reject` | A | `PENDING → REJECTED` |
+| DELETE | `/admin/referees/:id` | A | Hard delete. `409 REFEREE_HAS_ASSIGNMENTS` (`error.details.matchIds`) if the referee is assigned to any non-`FINISHED` match — reassign first. Finished matches keep their history but the referee link is nulled (`onDelete: SetNull`), so they read as "unbekannt". The auth hook re-checks existence, invalidating any live session |
 
 SSE event `referee.registered` (admin dashboard shows a badge when someone new signs up during the tournament).
 
@@ -215,9 +216,10 @@ SSE event `referee.registered` (admin dashboard shows a badge when someone new s
 | GET | `/tournaments` | P | List |
 | GET | `/tournaments/:id` | P | Detail incl. categories |
 | PATCH | `/tournaments/:id` | A | Editable while `DRAFT`/`SCHEDULED`; changing timing/pitchCount after generation requires regeneration |
-| DELETE | `/tournaments/:id` | A | `DRAFT` only |
+| DELETE | `/tournaments/:id` | A | Allowed in `DRAFT`, `SCHEDULED`, `FINISHED`; `409 TOURNAMENT_RUNNING` while `RUNNING`. Cascade-deletes all tournament-scoped data (categories, groups, teams, slots, matches, goals, pitches, audit entries); referee accounts are tournament-independent and remain |
 | POST | `/tournaments/:id/start` | A | `SCHEDULED → RUNNING`, puts slot 0 into `WAITING_READY` |
-| POST | `/tournaments/:id/finish` | A | |
+| POST | `/tournaments/:id/finish` | A | `RUNNING → FINISHED`. `409 MATCHES_STILL_RUNNING` (`error.details.matchIds`) if any match is `READY`/`RUNNING` — a finished tournament must never contain a live match; run finish-running first |
+| POST | `/tournaments/:id/matches/finish-running` | A | Force-finishes every `RUNNING` match at its current score (normal downstream: slot finish, standings, knockout resolution, `match.finished` per match). Level knockout draws can't pick a winner and are skipped. Returns `{ finished: [matchId], skipped: [{ matchId, reason: "PENALTIES_REQUIRED" }] }`; audit-logged |
 
 ### Structure (categories / groups / teams)
 | POST | `/tournaments/:id/categories` | A | `{ name, qualifiersPerGroup }` |
@@ -272,7 +274,10 @@ Tournament: DRAFT → SCHEDULED (schedule generated) → RUNNING → FINISHED
 Slot:       PENDING → WAITING_READY → RUNNING → FINISHED
 Match:      SCHEDULED → READY → RUNNING → FINISHED
 ```
-Reject every transition not shown here with `409`.
+Reject every transition not shown here with `409`. `RUNNING → FINISHED` on the
+tournament additionally requires no match to be `READY`/`RUNNING`
+(`409 MATCHES_STILL_RUNNING`); the admin force-finishes live matches via
+`POST /tournaments/:id/matches/finish-running` first.
 
 ## Validation & Edge Cases
 

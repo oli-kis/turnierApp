@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getTeamMatches } from "../../api/endpoints/public";
 import { qk } from "../../api/queries";
@@ -15,6 +15,24 @@ import { EmptyState } from "../../components/EmptyState";
  */
 export function TeamPage() {
   const { teamId } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const state = location.state as { tournamentId?: string; q?: string } | null;
+
+  // Prefer real back navigation when we arrived from within the app (restores the
+  // team search with its query); on a deep link, fall back to the search page if
+  // we know the tournament, else the start page (improvements.md item 5).
+  const onBack = () => {
+    if (location.key !== "default") {
+      navigate(-1);
+    } else if (state?.tournamentId) {
+      const suffix = state.q ? `?q=${encodeURIComponent(state.q)}` : "";
+      navigate(`/t/${state.tournamentId}/teams${suffix}`);
+    } else {
+      navigate("/");
+    }
+  };
+
   const { data, isLoading } = useQuery({
     queryKey: qk.teamMatches(teamId ?? ""),
     queryFn: () => getTeamMatches(teamId!).then((r) => r.matches),
@@ -24,9 +42,9 @@ export function TeamPage() {
 
   return (
     <div className="mx-auto min-h-dvh max-w-md p-4">
-      <Link to=".." className="text-sm font-semibold text-[var(--color-pine)]">
+      <button onClick={onBack} className="text-sm font-semibold text-[var(--color-pine)]">
         ← Zurück
-      </Link>
+      </button>
       <h1 className="mb-4 mt-2 font-display text-2xl font-extrabold">Spielplan</h1>
 
       {isLoading ? (
@@ -48,6 +66,7 @@ export function TeamPage() {
                 status={m.status}
                 pitch={m.pitch}
                 estimatedStart={m.estimatedStart}
+                plannedStart={m.plannedStart}
               />
             </div>
           ))}

@@ -48,7 +48,9 @@ export function RefereeAssignmentSection({ tournamentId }: { tournamentId: strin
                     </span>
                   </div>
                   <select
-                    defaultValue=""
+                    // Controlled by server state: the value is always the match's
+                    // persisted refereeId, so it survives navigation and refetch.
+                    value={m.refereeId ?? ""}
                     onChange={(e) => assign.mutate({ matchId: m.id, refereeId: e.target.value || null })}
                     className="shrink-0 rounded-lg border border-[var(--color-line)] px-2 py-1.5 text-sm"
                   >

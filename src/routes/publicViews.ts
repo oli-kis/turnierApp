@@ -112,6 +112,7 @@ export async function publicRoutes(app: FastifyInstance): Promise<void> {
         status: m.status,
         pitch: m.pitch?.name ?? null,
         slotIndex: m.slot?.index ?? null,
+        plannedStart: m.slot?.plannedStart ?? null,
         estimatedStart: m.slotId ? est.get(m.slotId) ?? null : null,
         homeTeam: m.homeTeam?.name ?? null,
         awayTeam: m.awayTeam?.name ?? null,

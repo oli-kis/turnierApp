@@ -50,6 +50,41 @@ export async function adminRefereeRoutes(app: FastifyInstance): Promise<void> {
     return { referee: refereeView(updated) };
   });
 
+  app.delete("/admin/referees/:id", async (request, reply) => {
+    await requireAdmin(request);
+    const { id } = z.object({ id: z.string() }).parse(request.params);
+    const ref = await prisma.user.findUnique({ where: { id } });
+    if (!ref || ref.role !== "REFEREE") throw Errors.notFound("Referee");
+
+    // Block while the referee still holds any not-yet-finished match: silent
+    // unassignment would break an upcoming slot's ready flow.
+    const openAssignments = await prisma.match.findMany({
+      where: { refereeId: id, status: { not: "FINISHED" } },
+      include: { homeTeam: true, awayTeam: true },
+    });
+    if (openAssignments.length > 0) {
+      throw Errors.conflict(
+        "REFEREE_HAS_ASSIGNMENTS",
+        "Schiedsrichter ist noch Spielen zugewiesen — zuerst neu zuweisen",
+        {
+          matchIds: openAssignments.map((m) => m.id),
+          matches: openAssignments.map((m) => ({
+            id: m.id,
+            tournamentId: m.tournamentId,
+            homeTeam: m.homeTeam?.name ?? null,
+            awayTeam: m.awayTeam?.name ?? null,
+          })),
+        },
+      );
+    }
+
+    // Hard delete. Finished matches keep their history but their referee link is
+    // nulled (schema onDelete: SetNull) — they read as "unbekannt" afterwards.
+    // The auth hook re-checks existence, so any live session is invalidated.
+    await prisma.user.delete({ where: { id } });
+    return reply.status(204).send();
+  });
+
   app.post("/admin/referees/:id/reject", async (request) => {
     await requireAdmin(request);
     const { id } = z.object({ id: z.string() }).parse(request.params);

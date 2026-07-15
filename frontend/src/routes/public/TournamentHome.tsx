@@ -52,6 +52,7 @@ export function TournamentHome() {
                 status={m.status}
                 actualStart={runningSlot?.actualStart}
                 matchDurationMin={duration}
+                tournamentStatus={tournament?.status}
               />
             ))}
           </div>
@@ -126,9 +127,13 @@ function NextTime({ slot }: { slot: Slot }) {
 }
 
 function UpcomingRow({ match }: { match: MatchListItem }) {
+  const time = formatSlotTime(match.slot?.plannedStart, match.estimatedStart);
   return (
-    <div className="flex items-center justify-between gap-3 px-4 py-3">
-      <div className="min-w-0">
+    <div className="flex items-center gap-3 px-4 py-3">
+      <span className="w-14 shrink-0 font-score text-[15px] font-bold tabular-nums text-[var(--color-ink)]">
+        {time}
+      </span>
+      <div className="min-w-0 flex-1">
         <div className="truncate font-semibold">{match.homeTeam?.name ?? "—"}</div>
         <div className="truncate font-semibold">{match.awayTeam?.name ?? "—"}</div>
       </div>

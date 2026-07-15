@@ -4,6 +4,7 @@ import { prisma } from "../db/client.js";
 import { Errors } from "../lib/errors.js";
 import { requireAdmin } from "../plugins/auth.js";
 import { getTournamentOr404, scheduleExists } from "../lib/loaders.js";
+import { finalizeMatch } from "../services/matchFinalize.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
 const createSchema = z.object({
@@ -109,10 +110,21 @@ export async function tournamentRoutes(app: FastifyInstance): Promise<void> {
     await requireAdmin(request);
     const { id } = idParam.parse(request.params);
     const tournament = await getTournamentOr404(id);
-    if (tournament.status !== "DRAFT") {
-      throw Errors.conflict("TOURNAMENT_NOT_DRAFT", "Only DRAFT tournaments can be deleted");
+    // Deletable in DRAFT, SCHEDULED and FINISHED; never while RUNNING.
+    if (tournament.status === "RUNNING") {
+      throw Errors.conflict("TOURNAMENT_RUNNING", "A running tournament cannot be deleted");
     }
-    await prisma.tournament.delete({ where: { id } });
+
+    // Categories/pitches/slots/matches/goals cascade via schema FKs. AuditLog has
+    // no FK (targetId is a free string), so remove its tournament-scoped rows here.
+    const matchIds = (
+      await prisma.match.findMany({ where: { tournamentId: id }, select: { id: true } })
+    ).map((m) => m.id);
+
+    await prisma.$transaction([
+      prisma.auditLog.deleteMany({ where: { targetId: { in: [id, ...matchIds] } } }),
+      prisma.tournament.delete({ where: { id } }),
+    ]);
     return reply.status(204).send();
   });
 
@@ -151,10 +163,67 @@ export async function tournamentRoutes(app: FastifyInstance): Promise<void> {
     if (tournament.status !== "RUNNING") {
       throw Errors.conflict("INVALID_TRANSITION", "Tournament must be RUNNING to finish");
     }
+
+    // A finished tournament must never contain a live match. Refuse while any
+    // match is READY or RUNNING; the admin finishes those first (finish-running).
+    const live = await prisma.match.findMany({
+      where: { tournamentId: id, status: { in: ["READY", "RUNNING"] } },
+      select: { id: true },
+    });
+    if (live.length > 0) {
+      const matchIds = live.map((m) => m.id);
+      throw Errors.conflict(
+        "MATCHES_STILL_RUNNING",
+        `Es laufen noch ${matchIds.length} Spiele — zuerst beenden`,
+        { matchIds },
+      );
+    }
+
     const updated = await prisma.tournament.update({
       where: { id },
       data: { status: "FINISHED" },
     });
     return { tournament: updated };
+  });
+
+  // Force-finish every RUNNING match at its current score. Knockout draws with no
+  // penalty result cannot pick a winner and are skipped for individual resolution.
+  app.post("/tournaments/:id/matches/finish-running", async (request) => {
+    const admin = await requireAdmin(request);
+    const { id } = idParam.parse(request.params);
+    await getTournamentOr404(id);
+
+    const running = await prisma.match.findMany({
+      where: { tournamentId: id, status: "RUNNING" },
+      orderBy: [{ slot: { index: "asc" } }],
+    });
+
+    const finished: string[] = [];
+    const skipped: { matchId: string; reason: string }[] = [];
+
+    for (const match of running) {
+      const isKnockout = match.phase !== "GROUP";
+      const drawn = match.scoreHome === match.scoreAway;
+      const pensSet = match.pensHome !== null && match.pensAway !== null;
+      if (isKnockout && drawn && !pensSet) {
+        skipped.push({ matchId: match.id, reason: "PENALTIES_REQUIRED" });
+        continue;
+      }
+      await finalizeMatch(match.id, match.tournamentId, match.slotId);
+      finished.push(match.id);
+    }
+
+    if (finished.length > 0 || skipped.length > 0) {
+      await prisma.auditLog.create({
+        data: {
+          actorId: admin.userId,
+          action: "MATCHES_FINISH_RUNNING",
+          targetId: id,
+          detail: JSON.stringify({ finished, skipped }),
+        },
+      });
+    }
+
+    return { finished, skipped };
   });
 }

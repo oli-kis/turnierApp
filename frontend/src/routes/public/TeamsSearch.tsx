@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useTeamSearch } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
 import { Skeleton } from "../../components/Skeleton";
@@ -7,9 +7,16 @@ import { Skeleton } from "../../components/Skeleton";
 /** Search-as-you-type (debounced 300ms) → team day page. */
 export function TeamsSearch() {
   const { id } = useParams();
-  const [input, setInput] = useState("");
+  // The search term lives in the URL (?q=) so it survives navigation away and
+  // back, and is shareable (improvements.md item 5).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [input, setInput] = useState(() => searchParams.get("q") ?? "");
   const q = useDebounced(input, 300);
   const { data, isFetching } = useTeamSearch(id, q);
+
+  useEffect(() => {
+    setSearchParams(input ? { q: input } : {}, { replace: true });
+  }, [input, setSearchParams]);
 
   return (
     <div className="space-y-4">
@@ -34,6 +41,7 @@ export function TeamsSearch() {
             <li key={t.id}>
               <Link
                 to={`/team/${t.id}`}
+                state={{ tournamentId: id, q: input }}
                 className="flex items-center justify-between gap-3 border-b border-[var(--color-line)] px-4 py-3 last:border-b-0 hover:bg-black/5"
               >
                 <span className="font-semibold">{t.name}</span>

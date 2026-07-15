@@ -4,23 +4,10 @@ import { prisma } from "../db/client.js";
 import { Errors } from "../lib/errors.js";
 import { requireAssignedReferee, requireAssignedRefereeOrAdmin } from "../lib/matchAuth.js";
 import { getMatchOr404 } from "../lib/loaders.js";
-import { maybeFinishSlot } from "../services/slotService.js";
-import { resolveDependents } from "../services/sourceResolution.js";
+import { finalizeMatch } from "../services/matchFinalize.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
 const idParam = z.object({ id: z.string() });
-
-async function finalizeMatch(matchId: string, tournamentId: string, slotId: string | null) {
-  const match = await prisma.match.update({
-    where: { id: matchId },
-    data: { status: "FINISHED", finishedAt: new Date() },
-  });
-  broadcaster.broadcast(tournamentId, "match.finished", { matchId });
-  broadcaster.broadcast(tournamentId, "standings.updated", { matchId });
-  // Knockout matches feed their winner/loser into dependent bracket matches.
-  if (match.phase !== "GROUP") await resolveDependents(match);
-  if (slotId) await maybeFinishSlot(tournamentId, slotId);
-}
 
 export async function scoringRoutes(app: FastifyInstance): Promise<void> {
   // Add a goal — assigned referee only, match must be RUNNING.

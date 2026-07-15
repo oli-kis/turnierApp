@@ -3,11 +3,14 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { createTournament, deleteTournament } from "../../api/endpoints/tournaments";
 import { useTournaments, qk } from "../../api/queries";
-import { Button } from "../../components/Button";
+import { Button, buttonClass } from "../../components/Button";
+import { Sheet } from "../../components/Sheet";
 import { Tag } from "../../components/Tag";
+import { useToast } from "../../components/Toast";
 import { CardSkeleton } from "../../components/Skeleton";
 import { EmptyState } from "../../components/EmptyState";
 import { formatTime } from "../../lib/time";
+import type { Tournament } from "../../api/types";
 
 const STATUS: Record<string, string> = {
   DRAFT: "Entwurf",
@@ -18,14 +21,9 @@ const STATUS: Record<string, string> = {
 
 export function AdminList() {
   const { data, isLoading } = useTournaments();
-  const qc = useQueryClient();
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-
-  const del = useMutation({
-    mutationFn: (id: string) => deleteTournament(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.tournaments() }),
-  });
+  const [deleteTarget, setDeleteTarget] = useState<Tournament | null>(null);
+  const navigate = useNavigate();
 
   return (
     <div className="space-y-6">
@@ -51,21 +49,26 @@ export function AdminList() {
                   {formatTime(t.startAt)} · {t.pitchCount} Plätze · {t.matchDurationMin}+{t.transitionMin} min
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Tag tone={t.status === "RUNNING" ? "live" : "neutral"}>{STATUS[t.status] ?? t.status}</Tag>
-                <Link to={`/admin/t/${t.id}/setup`} className="text-sm font-semibold text-[var(--color-pine)]">
+                {/* The contextually relevant action is primary: Live while the
+                    tournament runs, otherwise Setup. */}
+                <Link
+                  to={`/admin/t/${t.id}/setup`}
+                  className={buttonClass(t.status === "RUNNING" ? "secondary" : "primary")}
+                >
                   Setup
                 </Link>
-                <Link to={`/admin/t/${t.id}/live`} className="text-sm font-semibold text-[var(--color-pine)]">
+                <Link
+                  to={`/admin/t/${t.id}/live`}
+                  className={buttonClass(t.status === "RUNNING" ? "primary" : "secondary")}
+                >
                   Live
                 </Link>
-                {t.status === "DRAFT" && (
-                  <button
-                    onClick={() => del.mutate(t.id)}
-                    className="text-sm font-semibold text-[var(--color-loss)]"
-                  >
+                {t.status !== "RUNNING" && (
+                  <Button variant="danger" onClick={() => setDeleteTarget(t)}>
                     Löschen
-                  </button>
+                  </Button>
                 )}
               </div>
             </li>
@@ -74,7 +77,62 @@ export function AdminList() {
       ) : (
         <EmptyState title="Noch keine Turniere" hint="Erstelle das erste Turnier." />
       )}
+
+      <DeleteDialog target={deleteTarget} onClose={() => setDeleteTarget(null)} />
     </div>
+  );
+}
+
+/** Typed-confirmation delete — destroying a whole tournament day needs more than OK. */
+function DeleteDialog({ target, onClose }: { target: Tournament | null; onClose: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [confirm, setConfirm] = useState("");
+
+  const close = () => {
+    setConfirm("");
+    onClose();
+  };
+
+  const del = useMutation({
+    mutationFn: (id: string) => deleteTournament(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.tournaments() });
+      toast.show("Turnier gelöscht", "success");
+      close();
+    },
+  });
+
+  if (!target) return null;
+  const match = confirm.trim() === target.name;
+
+  return (
+    <Sheet open={!!target} onClose={close} title="Turnier löschen">
+      <p className="mb-3 text-sm text-[var(--color-ink)]/70">
+        Das löscht <b>alle</b> Daten dieses Turniers (Kategorien, Teams, Spiele, Resultate) unwiderruflich.
+        Tippe zur Bestätigung den Turniernamen <b>{target.name}</b>.
+      </p>
+      <input
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        placeholder={target.name}
+        autoFocus
+        className="mb-3 w-full rounded-lg border border-[var(--color-line)] px-3 py-2"
+      />
+      <div className="flex gap-3">
+        <Button variant="secondary" className="flex-1" onClick={close}>
+          Abbrechen
+        </Button>
+        <Button
+          variant="danger"
+          className="flex-1"
+          disabled={!match || del.isPending}
+          onClick={() => del.mutate(target.id)}
+        >
+          Endgültig löschen
+        </Button>
+      </div>
+    </Sheet>
   );
 }
 
