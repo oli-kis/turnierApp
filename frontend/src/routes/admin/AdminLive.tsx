@@ -94,6 +94,9 @@ export function AdminLive() {
           <Link to={`/admin/t/${id}/setup`} className={buttonClass("secondary")}>
             Setup
           </Link>
+          <Link to={`/admin/t/${id}/spiele`} className={buttonClass("secondary")}>
+            Alle Spiele
+          </Link>
           {tournament?.status === "SCHEDULED" && (
             <Button onClick={() => start.mutate()} disabled={start.isPending}>
               Turnier starten

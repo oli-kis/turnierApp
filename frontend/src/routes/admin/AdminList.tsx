@@ -65,6 +65,9 @@ export function AdminList() {
                 >
                   Live
                 </Link>
+                <Link to={`/admin/t/${t.id}/spiele`} className={buttonClass("secondary")}>
+                  Spiele
+                </Link>
                 {t.status !== "RUNNING" && (
                   <Button variant="danger" onClick={() => setDeleteTarget(t)}>
                     Löschen

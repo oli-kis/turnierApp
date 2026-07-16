@@ -25,6 +25,7 @@ import { AdminList } from "./routes/admin/AdminList";
 import { AdminReferees } from "./routes/admin/AdminReferees";
 import { AdminSetup } from "./routes/admin/AdminSetup";
 import { AdminLive } from "./routes/admin/AdminLive";
+import { AdminMatches } from "./routes/admin/AdminMatches";
 import { AdminMatchEditor } from "./routes/admin/AdminMatchEditor";
 
 export const router = createBrowserRouter([
@@ -67,6 +68,7 @@ export const router = createBrowserRouter([
           { path: "referees", element: <AdminReferees /> },
           { path: "t/:id/setup", element: <AdminSetup /> },
           { path: "t/:id/live", element: <AdminLive /> },
+          { path: "t/:id/spiele", element: <AdminMatches /> },
           { path: "t/:id/spiel/:matchId", element: <AdminMatchEditor /> },
         ],
       },
