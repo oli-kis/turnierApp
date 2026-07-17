@@ -25,8 +25,16 @@ npm run push:keys    # print a VAPID keypair for .env (see Push); optional
 npm run push:test -- <referee-email>   # send a real test notification to their devices
 ```
 
-Env: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `ADMIN_*`. Two optional feature
-blocks, each simply off when unset:
+Env: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `ADMIN_*`. The admin account is
+upserted on boot as well as by the script — a hosted instance may have no shell
+to run the script in, and then nobody could log in at all.
+
+`CORS_ORIGIN` (comma-separated browser origins, no trailing slash) is needed only
+when the frontend is deployed on its own domain; in dev and `preview` it reaches
+the API through Vite's `/api` proxy, so every request is same-origin. Unset means
+"no cross-origin callers", never "any".
+
+Two optional feature blocks, each simply off when unset:
 - Push: `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`.
 - Registration: `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `PUBLIC_BASE_URL`
   (+ `RESEND_API_KEY` / `MAIL_FROM` once the mailer has a provider).

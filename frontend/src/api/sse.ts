@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { qk } from "./queries";
+import { apiUrl } from "./client";
 import type { MatchDetail } from "./types";
 
 /**
@@ -155,7 +156,7 @@ export function useTournamentEvents(tournamentId: string | undefined): void {
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const connect = () => {
-      es = new EventSource(`/api/tournaments/${tournamentId}/events`);
+      es = new EventSource(apiUrl(`/tournaments/${tournamentId}/events`));
 
       es.onopen = () => {
         if (attempt > 0) invalidateTournamentScoped(qc, tournamentId);

@@ -8,6 +8,8 @@ declare module "fastify" {
   }
 }
 import rateLimit from "@fastify/rate-limit";
+import cors from "@fastify/cors";
+import { env } from "./lib/env.js";
 import { registerAuth } from "./plugins/auth.js";
 import { registerErrorHandler } from "./plugins/errorHandler.js";
 import { authRoutes } from "./routes/auth.js";
@@ -58,6 +60,24 @@ export async function buildApp(): Promise<FastifyInstance> {
   );
 
   registerErrorHandler(app);
+
+  // Cross-origin access, only when a deployment actually needs it (see env.ts).
+  // Origins are listed exactly — scheme + host, no trailing slash — because a
+  // wrong entry here is invisible on the server and shows up only as a blocked
+  // request in someone else's browser console.
+  const corsOrigins = env.CORS_ORIGIN?.split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter((o) => o.length > 0);
+  if (corsOrigins?.length) {
+    await app.register(cors, {
+      origin: corsOrigins,
+      // The referee and admin surfaces authenticate with a bearer token from
+      // localStorage, not a cookie, so credentials mode stays off.
+      methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+    });
+  }
+
   await app.register(rateLimit, { global: false, max: 300, timeWindow: "1 minute" });
   await registerAuth(app);
 

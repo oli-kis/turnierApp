@@ -35,8 +35,27 @@ interface RequestOptions<T> {
   query?: Record<string, string | number | undefined>;
 }
 
+/**
+ * Where the API lives, as a prefix to put in front of `/api`.
+ *
+ * Empty in dev, preview and tests: the Vite proxy makes the API same-origin, so
+ * a relative path is both correct and the reason a phone only ever talks to the
+ * Vite port. A static production build has no proxy behind it, so there it is an
+ * absolute origin and the backend must allow it via `CORS_ORIGIN`.
+ *
+ * Trailing slashes are stripped for the same reason `PUBLIC_BASE_URL` does it:
+ * this is hand-pasted into a hosting dashboard, and "…onrender.com/" would build
+ * "…onrender.com//api/…".
+ */
+const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN ?? "").replace(/\/+$/, "");
+
+/** Absolute or same-origin URL for an API path. Also used by the SSE stream. */
+export function apiUrl(path: string): string {
+  return `${API_ORIGIN}/api${path}`;
+}
+
 function buildUrl(path: string, query?: Record<string, string | number | undefined>): string {
-  const url = `/api${path}`;
+  const url = apiUrl(path);
   if (!query) return url;
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) {

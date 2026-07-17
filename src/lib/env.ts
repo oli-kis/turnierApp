@@ -29,6 +29,16 @@ const schema = z.object({
   STRIPE_SECRET_KEY: z.string().min(1).optional(),
   STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
   PUBLIC_BASE_URL: z.string().url().optional(),
+  // Browser origins allowed to call this API, comma-separated. Optional for a
+  // reason that is easy to misread as an oversight: in dev and in `preview` the
+  // frontend reaches us through Vite's `/api` proxy, so every request is
+  // same-origin and CORS never enters the picture. It is only a deployed
+  // frontend on its own domain that needs this — so unset means "nobody calls me
+  // cross-origin", not "everybody may".
+  //
+  // Stripe's webhook is server-to-server and sends no Origin, so it is unaffected
+  // by whatever is set here.
+  CORS_ORIGIN: z.string().min(1).optional(),
   // Confirmation email. Absent → the mailer logs instead of sending; a missing
   // receipt must never fail a payment that already went through.
   RESEND_API_KEY: z.string().min(1).optional(),

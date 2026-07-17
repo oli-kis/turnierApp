@@ -26,6 +26,19 @@ npm run typecheck
 
 `.env`: `VITE_API_URL=http://localhost:3000`
 
+Two API variables, and they are not interchangeable — confusing them yields an
+app that builds cleanly and cannot reach its backend:
+
+- **`VITE_API_URL`** — the dev/preview **proxy target**, read by `vite.config.ts`.
+  Never reaches the bundle. This is what keeps `/api` same-origin, which is why a
+  phone on the LAN or a tunnel only ever talks to the Vite port.
+- **`VITE_API_ORIGIN`** — the absolute API origin **baked into the built JS**
+  (`client.ts` owns it; `sse.ts` uses the same `apiUrl()` so the stream cannot
+  drift from the REST calls). Set it only for a static deployment, where there is
+  no proxy to fall back on. Unset → relative `/api` → the proxy, so dev, preview
+  and tests are unaffected. When set, the backend must list this app's origin in
+  its `CORS_ORIGIN`.
+
 ## Project Structure
 
 ```
@@ -305,4 +318,3 @@ missing field beats quietly inventing a zero fee.
 ## Open Items (v2)
 
 - Push covers assignment and `slot.waiting-ready`. Not yet: a nudge when the referee's slot is `WAITING_READY` but *their* match is still unready — the one operational gap notifications could still close.
-- Registration: no team-side editing, no waitlist (explicitly excluded), no deadline reminder. Refunds are initiated in the Stripe dashboard.
