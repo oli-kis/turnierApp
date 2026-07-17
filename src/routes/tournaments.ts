@@ -5,6 +5,7 @@ import { Errors } from "../lib/errors.js";
 import { requireAdmin } from "../plugins/auth.js";
 import { getTournamentOr404, scheduleExists } from "../lib/loaders.js";
 import { finalizeMatch } from "../services/matchFinalize.js";
+import { notifySlotWaitingReady } from "../services/pushService.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
 const createSchema = z.object({
@@ -153,6 +154,7 @@ export async function tournamentRoutes(app: FastifyInstance): Promise<void> {
     ]);
 
     broadcaster.broadcast(id, "slot.waiting-ready", { slotId: firstSlot.id, index: firstSlot.index });
+    notifySlotWaitingReady(firstSlot.id);
     return { status: "RUNNING", waitingSlotId: firstSlot.id };
   });
 

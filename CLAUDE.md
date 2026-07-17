@@ -1,188 +1,362 @@
-# CLAUDE.md — FC Frick Tournament Frontend
+# CLAUDE.md — FC Frick Tournament Backend
 
-Frontend for the FC Frick tournament backend (see the backend repo's CLAUDE.md for the API contract). One codebase, three surfaces:
-
-| Surface | Users | Device reality |
-|---|---|---|
-| **Public** | Spectators, parents, players | Phones, outdoors, bright sunlight, one hand holding a bratwurst |
-| **Referee** | Approved referees | Phone in hand pitchside, gloves possible, glare, stress |
-| **Admin** | Tournament desk | Laptop/tablet at the info stand |
-
-Rename this file to `CLAUDE.md` in the frontend repository root.
+Backend for the FC Frick annual tournament weekend. Handles tournament setup, automatic match scheduling, group standings, knockout brackets, a referee ready/scoring system with synchronized match starts, and public read-only views.
 
 ## Tech Stack
 
-- **Vite + React 19 + TypeScript (strict)** — plain SPA. The backend is a separate Fastify API; no SSR needed, everything is live data anyway.
-- **React Router v7** (library mode)
-- **TanStack Query v5** for all server state. No Redux/Zustand — the only client state is the auth token and UI toggles.
-- **Tailwind CSS v4** with the design tokens below defined as CSS variables in `@theme`.
-- **Zod** for parsing API responses (share schemas with the backend via a copied `types.ts` until a shared package exists).
-- **Vitest + Testing Library** for the standings table, bracket rendering, and the SSE→invalidation map.
+- **Runtime:** Node.js 22, TypeScript (strict mode)
+- **Framework:** Fastify
+- **ORM / DB:** Prisma + PostgreSQL (SQLite acceptable for local dev via Prisma provider switch)
+- **Validation:** Zod on every request body and query string
+- **Auth:** JWT (`@fastify/jwt`), bcrypt for password hashing
+- **Real-time:** Server-Sent Events (SSE). One-directional push is enough — referees and admin act via normal POST/PATCH, they only need to *receive* live state. No WebSocket dependency.
+- **Tests:** Vitest. The scheduler, standings calculator, and bracket generator must have unit tests before anything else — they encode the tournament's fairness rules.
+
+## Commands
 
 ```bash
-npm run dev        # vite dev server, proxies /api to VITE_API_URL
-npm run build
-npm test
-npm run typecheck
+npm run dev          # start dev server with reload
+npm run build        # tsc build
+npm test             # vitest
+npx prisma migrate dev
+npx prisma studio
+npm run seed:admin   # create the admin account from ADMIN_EMAIL / ADMIN_PASSWORD env vars
+npm run push:keys    # print a VAPID keypair for .env (see Push); optional
+npm run push:test -- <referee-email>   # send a real test notification to their devices
 ```
 
-`.env`: `VITE_API_URL=http://localhost:3000`
+Env: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `ADMIN_*`. Push adds the optional
+`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — omit them and push
+is simply off.
 
-## Project Structure
+## Roles & Auth
 
-```
-src/
-  api/
-    client.ts        # fetch wrapper: base URL, JWT header, error normalization
-    endpoints/       # one typed function per backend endpoint
-    queries.ts       # TanStack Query hooks (keys defined here, nowhere else)
-    sse.ts           # EventSource lifecycle + event→invalidation map
-  routes/
-    public/          # /, /t/:id, standings, bracket, team search
-    referee/         # /ref/*
-    admin/           # /admin/*
-  components/        # shared: ScoreBoard, MatchCard, StandingsTable, Tag, ...
-  lib/               # time formatting (de-CH, 24h), match-state helpers
-```
+| Role | How created | Can do |
+|---|---|---|
+| `ADMIN` | Seed script only, no registration endpoint | Everything |
+| `REFEREE` | Self-registration, status `PENDING` until admin approves | Ready/score/finish only on matches assigned to them. **`PENDING` referees cannot log in at all** — login returns `403 REFEREE_PENDING` with a message to wait for approval |
+| Public | No account | All `GET` endpoints marked public |
 
-## API Integration
+JWT payload: `{ userId, role }`. Access token TTL 12h (one tournament day), no refresh token needed for v1.
 
-`client.ts` rules:
-- Reads JWT from `localStorage` (`token`), attaches `Authorization: Bearer`.
-- Normalizes the backend error contract `{ error: { code, message } }` into a thrown `ApiError { status, code, message }`.
-- Global handling: `401` → clear token, redirect to login. `403 REFEREE_PENDING` → route to the pending screen, don't sign out. `409` → surface `message` as a toast; these are legal race conditions on tournament day (someone else pressed the button first), never blank screens.
+## Data Model (Prisma sketch)
 
-### Endpoint coverage
+```prisma
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  name         String
+  role         Role    // ADMIN | REFEREE
+  status       UserStatus // APPROVED | PENDING | REJECTED  (admins always APPROVED)
+  matches      Match[]
+}
 
-Every backend endpoint has exactly one home. When implementing, check off against this table — nothing in the API goes unused:
+model Tournament {
+  id                 String @id @default(cuid())
+  name               String
+  startAt            DateTime          // first slot start
+  matchDurationMin   Int               // e.g. 12
+  transitionMin      Int               // e.g. 3
+  pitchCount         Int
+  status             TournamentStatus  // DRAFT | SCHEDULED | RUNNING | FINISHED
+  categories         Category[]
+  pitches            Pitch[]
+  slots              Slot[]
+}
 
-| Endpoint | Used by |
-|---|---|
-| POST `/auth/register` | Referee registration page |
-| POST `/auth/login` | Shared login page (routes by role after) |
-| GET `/auth/me` | App bootstrap when a token exists |
-| GET `/admin/referees?status=` | Admin → referee approval queue |
-| POST `/admin/referees/:id/approve` `/reject` | Approval queue row actions |
-| DELETE `/admin/referees/:id` | Approval queue delete action; on `409 REFEREE_HAS_ASSIGNMENTS` show the blocking matches (`error.details.matches`) as links to the match editor |
-| POST/GET/PATCH/DELETE `/tournaments*` | Admin tournament list + settings form; public tournament picker. DELETE via typed-name confirm dialog (allowed unless `RUNNING` → `409 TOURNAMENT_RUNNING`) |
-| POST `/tournaments/:id/start` `/finish` | Admin live dashboard header. `/finish` on `409 MATCHES_STILL_RUNNING` opens the finish-running action from the error state |
-| POST `/tournaments/:id/matches/finish-running` | Admin live dashboard header "Laufende beenden"; confirm dialog lists running matches, reports skipped `PENALTIES_REQUIRED` draws afterwards |
-| Category/Group/Team CRUD | Admin setup screen (tree editor) |
-| PATCH `/groups/:id/tiebreak` | Admin standings view, only shown when `tieUnresolved` |
-| POST `/tournaments/:id/schedule/generate` | Admin setup → "Spielplan erstellen" step, renders returned rest stats before the admin confirms publishing |
-| POST `/categories/:id/knockout/generate` | Admin category view, enabled when preconditions met |
-| GET `/tournaments/:id/slots` | Public schedule timeline; admin dashboard delay banner |
-| GET `/tournaments/:id/matches?...` | Public match lists (all filters exposed as UI filters) |
-| GET `/matches/:id` | Public match detail; referee match screen |
-| PATCH `/matches/:id` | Admin match editor (pitch/slot/referee assignment) |
-| GET `/referees/me/matches` | Referee home |
-| POST `/matches/:id/ready` `/unready` | Referee match screen ready toggle |
-| POST `/matches/:id/goals`, DELETE `/goals/:id` | Referee live scoring |
-| POST `/matches/:id/finish` `/penalties` | Referee match screen |
-| GET `/tournaments/:id/dashboard` | Admin live dashboard |
-| POST `/matches/:id/force-ready` | Admin dashboard pitch card |
-| PATCH `/matches/:id/result` | Admin match editor, post-hoc correction with confirm dialog |
-| GET `/groups/:id/standings` | Public group page; admin standings |
-| GET `/categories/:id/bracket` | Public bracket page; admin category view |
-| GET `/tournaments/:id/teams/search?q=` | Public team search |
-| GET `/teams/:id/matches` | Public team page |
-| GET `/tournaments/:id/events` | `sse.ts`, subscribed on every tournament-scoped route |
+model Pitch {
+  id           String @id @default(cuid())
+  tournamentId String
+  name         String    // "Platz 1"
+  sortOrder    Int
+}
 
-### SSE handling (`sse.ts`)
+model Category {
+  id                    String @id @default(cuid())
+  tournamentId          String
+  name                  String   // "Junioren D", "Aktive", ...
+  qualifiersPerGroup    Int      // teams advancing per group, set before knockout generation
+  knockoutGenerated     Boolean @default(false)
+  groups                Group[]
+  teams                 Team[]
+}
 
-One `EventSource` per open tournament, created by a `useTournamentEvents(tournamentId)` hook mounted in the tournament layout route. Map events to query invalidations — do not patch caches by hand except for `goal.scored` (optimistic-feel score bump, then invalidate):
+model Group {
+  id         String @id @default(cuid())
+  categoryId String
+  name       String   // "Gruppe A"
+  teams      Team[]
+}
 
-| Event | Invalidate |
-|---|---|
-| `match.ready` / `match.unready` | dashboard, slots, match detail |
-| `slot.waiting-ready` / `slot.started` / `slot.finished` | slots, dashboard, referee matches |
-| `goal.scored` / `goal.deleted` | match detail, dashboard |
-| `match.finished` | match lists, standings of its group, dashboard |
-| `schedule.updated` | slots, all match lists (estimated times changed) |
-| `standings.updated` | standings |
-| `bracket.updated` | bracket, match lists |
-| `referee.registered` | admin referee list |
+model Team {
+  id         String @id @default(cuid())
+  categoryId String
+  groupId    String?
+  name       String
+}
 
-Reconnect with exponential backoff (max 15 s); on reconnect, invalidate everything tournament-scoped once — pitchside 4G will drop.
+model Slot {
+  id           String @id @default(cuid())
+  tournamentId String
+  index        Int        // 0-based, defines order of the day
+  plannedStart DateTime   // startAt + index * (matchDurationMin + transitionMin)
+  actualStart  DateTime?  // set when the slot fires
+  status       SlotStatus // PENDING | WAITING_READY | RUNNING | FINISHED
+  matches      Match[]
+  @@unique([tournamentId, index])
+}
 
-## Screens
+model Match {
+  id           String  @id @default(cuid())
+  tournamentId String
+  categoryId   String
+  groupId      String?     // null for knockout
+  slotId       String?     // null until scheduled
+  pitchId      String?
+  refereeId    String?
+  phase        MatchPhase  // GROUP | ROUND_OF_16 | QUARTERFINAL | SEMIFINAL | THIRD_PLACE | FINAL
+  status       MatchStatus // SCHEDULED | READY | RUNNING | FINISHED
+  homeTeamId   String?     // null while knockout source unresolved
+  awayTeamId   String?
+  homeSource   Json?       // {type:"GROUP_RANK",groupId,rank} | {type:"MATCH_WINNER"|"MATCH_LOSER",matchId}
+  awaySource   Json?
+  scoreHome    Int @default(0)   // denormalized from Goal rows
+  scoreAway    Int @default(0)
+  pensHome     Int?        // knockout only, after a draw
+  pensAway     Int?
+  finishedAt   DateTime?
+  goals        Goal[]
+}
 
-Route names and UI copy are **German** (de-CH: 24-h times, `14:30`, no AM/PM). Code, comments, and this doc stay English.
+model Goal {
+  id        String @id @default(cuid())
+  matchId   String
+  teamId    String
+  clientId  String? @unique  // idempotency key minted by the referee's outbox
+  createdAt DateTime @default(now())
+  createdBy String   // referee userId, for audit
+}
 
-### Public (no auth)
-
-- `/` — Tournament picker. If exactly one tournament is `RUNNING`, redirect straight into it.
-- `/t/:id` — Tournament home. Top block: **Jetzt läuft** — the running slot as live score cards per pitch, updating via SSE. Below: **Als Nächstes** (next slot with estimated times and a delay note when estimate ≠ plan, e.g. „+12 min verspätet"), then category links.
-- `/t/:id/kategorie/:catId` — Groups with mini-standings; bracket below once knockout exists.
-- `/t/:id/gruppe/:groupId` — Full standings table (Sp/S/U/N/Tore/TD/Pkt) + all group matches with results.
-- `/t/:id/tabelle` → bracket view per category: classic tree, unresolved slots labeled from `homeSource`/`awaySource` („Sieger Gruppe A", „Verlierer HF 1").
-- `/t/:id/teams` — Search-as-you-type (debounced 300 ms) → `/team/:teamId`: the team's full day, chronological, each row with time (estimated, live-updating), pitch, opponent, result. This page is what parents bookmark — it must be perfect on a 360-px screen.
-
-### Referee (`/ref`)
-
-- `/ref/login`, `/ref/registrieren` — registration ends on „Warte auf Freigabe durch die Turnierleitung"; the same screen appears on `403 REFEREE_PENDING` at login.
-- `/ref` — My matches, grouped by slot, next one pinned on top with its state.
-- `/ref/spiel/:id` — The one screen that matters. Full-height layout, three phases:
-  1. **Waiting**: opponent names huge, pitch name, estimated start. One button: **„Beide Teams bereit"** — minimum 64 px tall, full width. After tapping: confirmation state with an „Doch nicht bereit" undo, plus „Warten auf andere Plätze" with a live n/m ready counter (SSE).
-  2. **Running** (flips automatically on `slot.started`): scoreboard with a client-side count-up clock from `slot.actualStart`, turning `--live` colored past `matchDurationMin`. Two giant `+1` zones (left/right half of the screen, one per team), an undo row listing recent goals with delete, and **„Spiel beenden"** behind a confirm sheet.
-  3. **Finish**: on knockout draw the `409 PENALTIES_REQUIRED` response opens the penalty sheet (two steppers, home ≠ away enforced client-side too).
-  - Goal taps must feel instant: optimistic increment, rollback + toast on failure. Disable the tapped zone for 400 ms to prevent double-taps.
-  - `navigator.onLine` false or a failed mutation → sticky offline banner; never silently drop a goal.
-
-### Admin (`/admin`)
-
-- `/admin` — Tournament list, create form. Each card's **Setup** and **Live** are real buttons (the contextually relevant one primary: Live while `RUNNING`, else Setup); no link-styled actions. Delete is available unless `RUNNING` and opens a typed-name confirmation dialog — deleting a tournament destroys a whole day's results, so a plain OK is not enough.
-- `/admin/t/:id/setup` — Setup as a checklist, not a wizard (admins jump around): 1. Grunddaten 2. Kategorien/Gruppen/Teams (inline-editable tree) 3. Schiedsrichter zuweisen (per-slot table, dropdown per match, conflict-checked) 4. Spielplan. The generate button shows the returned rest stats (min/max/avg Pause pro Team) in a confirm dialog before the schedule is accepted. Invalid bracket sizes (`INVALID_BRACKET_SIZE`) render inline at the `qualifiersPerGroup` field with the valid options from the error message.
-- `/admin/t/:id/live` — The dashboard. One card per pitch for the active slot: teams, referee name, ready state (pulsing until ready), live score, force-ready button. Header: current delay vs. plan, „Slot n von m", tournament start/finish controls, and a **„Laufende beenden (n)"** action that force-finishes every running match (confirm dialog lists them; reports skipped knockout draws needing penalties). Finishing the tournament while matches run surfaces the same action from the `409 MATCHES_STILL_RUNNING` state. Next slot preview underneath with assignment gaps highlighted in the live accent color — an unassigned referee 10 minutes before a slot is the #1 operational failure.
-- `/admin/referees` — Approval queue; badge in the nav on `referee.registered`. Each row has a delete action (confirm dialog); on `409 REFEREE_HAS_ASSIGNMENTS` the blocking matches are listed as links to the match editor to reassign first.
-- `/admin/t/:id/spiel/:matchId` — Match editor: reassign pitch/slot/referee, post-hoc result correction with a typed-confirmation dialog („SF1 korrigieren").
-
-## Design System
-
-**Direction — „Anzeigetafel":** the visual world of this app is the tournament ground itself: chalk lines on grass, the hand-flipped scoreboard, laminated schedules at the info stand. Not the club's blue/yellow (explicit requirement) and not a generic sports-app dark mode — the app is used outdoors in May sunshine, so the base is light and the contrast is brutal.
-
-### Tokens (`@theme` in Tailwind v4)
-
-```css
---color-chalk:   #F6F6F2;  /* page background — cool paper white */
---color-ink:     #16211B;  /* text — green-cast near-black, AAA on chalk */
---color-pine:    #1A5A48;  /* primary: buttons, links, active states */
---color-pine-deep:#0E3D30; /* hover, headers */
---color-live:    #E8590C;  /* ONLY for live things: running clock, LIVE tag, delay warnings, unassigned-referee alerts */
---color-line:    #D8DAD3;  /* borders, table rules — chalk line grey */
---color-win: #1F7A33; --color-loss: #B3261E; /* result glyphs only, never surfaces */
+model PushSubscription {          // one row per referee device (see Push below)
+  id        String @id @default(cuid())
+  userId    String
+  endpoint  String @unique        // the browser's own handle for the subscription
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+}
 ```
 
-Rules: `--color-live` is reserved for time-critical/live information and appears nowhere decorative — that scarcity is what makes the dashboard scannable. Surfaces stay chalk/white with 1 px `--color-line` borders; shadows minimal; radius 8 px on cards, 999 px on tags.
+## Core Business Rules
 
-### Type
+### 1. Group-stage scheduling (`POST /tournaments/:id/schedule/generate`)
 
-- **Display & scores:** Archivo (weights 600–900, `font-feature-settings: "tnum"` — scores and clocks must be tabular so digits don't jump). Scores on the referee screen: 96 px+. Live cards public: 40 px.
-- **Body/UI:** Instrument Sans. Utility/data (tables, times): same family, tabular numerals, 13–14 px, generous line height.
-- Standings tables and schedules are the core content — design the table first, the page around it.
+Input already on the tournament: `startAt`, `matchDurationMin`, `transitionMin`, `pitchCount`, plus all categories/groups/teams.
 
-### Signature element
+Requirements:
+- Round-robin inside each group: every team plays every other team once. Use the circle method. Group of n teams → n−1 rounds (n rounds with a bye if n is odd), each round has ⌊n/2⌋ matches with no team appearing twice.
+- Pack rounds into global **slots**. A slot holds at most `pitchCount` matches. A team must never have two matches in the same slot (guaranteed if a group's round is never split across... it *can* be split across slots, but then enforce the constraint per team explicitly — prefer keeping a group-round inside one slot when ⌊n/2⌋ ≤ pitchCount).
+- Rounds of the same group must be scheduled in round order.
+- **Rest balancing objective:** minimize the variance of the gap (in slots) between consecutive matches of each team, across all teams. Perfect equality is usually impossible; document the achieved min/max rest in the generation response so the admin can judge it.
 
-The **live score card**: pitch name as an eyebrow, two team names, the tabular score in display weight, a thin progress bar underneath filling across `matchDurationMin` in `--color-live`. This exact card is reused at three sizes — public „Jetzt läuft", admin dashboard, referee screen — so the whole product visibly shares one scoreboard identity.
+Suggested algorithm (good enough, exact optimum is NP-hard):
+1. Build round units per group.
+2. Fill slots greedily: for each slot, among groups whose next round is eligible, pick the ones whose teams have waited longest (maximize minimum rest), until pitch capacity is reached.
+3. Local-search pass: try pairwise swaps of round units between slots; keep a swap if it lowers rest variance without violating constraints.
+4. Assign pitches: keep a group on the same pitch where possible (spectator convenience), tiebreak by pitch sortOrder.
 
-### Outdoor & touch floor
+`plannedStart` per slot = `startAt + index × (matchDurationMin + transitionMin)`.
 
-- Contrast ≥ 7:1 for all text (sunlight), no grey-on-grey metadata below 4.5:1.
-- Touch targets ≥ 48 px everywhere, ≥ 64 px for referee actions.
-- No hover-only affordances; everything works by tap.
-- `prefers-reduced-motion` respected; the only ambient animation is the ready-state pulse and the score-change tick.
-- Visible keyboard focus (admin uses a laptop).
+Regeneration: allowed only while tournament status is `DRAFT` or `SCHEDULED` and no match has started. Regeneration deletes all existing group-stage matches and slots. Return `409` otherwise.
 
-## States & Copy
+### 2. Synchronized starts (the ready system)
 
-- Every list has a designed empty state that says what to do next („Noch keine Teams — füge das erste Team hinzu").
-- Errors state what happened and the way out, in the interface's voice, no apologies: „Spiel läuft nicht mehr — Tor wurde nicht gezählt."
-- Loading: skeletons for tables/cards, never spinners on full pages.
-- Times: always show estimated start when it differs from planned, formatted „14:42 (geplant 14:30)". The kickoff time is the single most important datum for players/parents, so **every** match rendering shows it in display weight (tabular): `MatchRow` leads with it, `ScoreCard` shows it as the eyebrow when not running, and the match list / team-day endpoints carry each match's `plannedStart` + `estimatedStart` so no view can forget it.
-- LIVE guard (defence in depth): the LIVE badge and count-up clock render only when `match.status === "RUNNING"` **and** the tournament is `RUNNING`. `MatchRow` and `ScoreCard` take an optional `tournamentStatus` for this — a finished tournament must never show a live match.
+All matches inside a slot start at the same moment. Flow:
 
-## Open Items (v2)
+1. Slot `k` becomes `WAITING_READY` when slot `k−1` reaches `FINISHED` (slot 0: when admin starts the tournament).
+2. Each referee assigned to a match in slot `k` sees a **Ready** button and presses it when both teams stand on the pitch → match status `READY`.
+3. When **every** match in the slot is `READY`, the server flips the slot to `RUNNING`, sets `actualStart = now`, sets all its matches to `RUNNING`, and broadcasts `slot.started` over SSE. Referees start their clocks off this event.
+4. Admin override: `POST /matches/:id/force-ready` marks a match ready without the referee (no-show referee, dead phone battery). Admin can also remove a match from a slot (`PATCH /matches/:id` with `slotId: null`) if a team withdrew — the slot then fires without it.
+5. Delays cascade: when a slot starts late, recompute estimated starts for all later slots as `max(plannedStart, previousSlotEnd + transitionMin)` and broadcast `schedule.updated`. Store only `plannedStart` and `actualStart`; estimated times are computed, never persisted.
 
-- PWA install + offline goal queue (v1 only guards against silent loss).
-- Big-screen mode: auto-cycling standings/live view for a beamer at the clubhouse.
-- Push notifications for referees.
+A slot is `FINISHED` when all its matches are `FINISHED`. The match clock (`matchDurationMin`) is informational for the referee UI; the server never auto-finishes a match — the referee presses Finish.
+
+### 3. Live scoring
+
+- `POST /matches/:id/goals { teamId }` — only the assigned referee, only while match is `RUNNING`. Creates a Goal row, increments the denormalized score, broadcasts `goal.scored`.
+- `DELETE /goals/:id` — correction by the same referee or admin, decrements score.
+- `POST /matches/:id/finish` — referee or admin. Group match: any result stands. Knockout match with a draw: server responds `409 PENALTIES_REQUIRED`; referee then submits `POST /matches/:id/penalties { home, away }` (must not be equal), after which the match auto-finishes.
+- Admin can `PATCH /matches/:id/result` after the fact to fix a wrong final score (audit-log it).
+
+### 4. Standings
+
+Computed on read from finished group matches (no stored table — one weekend of data, always consistent):
+- Win 3 points, draw 1, loss 0.
+- Tiebreakers in order: points → goal difference → goals scored → head-to-head result → head-to-head goal difference.
+- If still tied and the tie affects qualification, the standings response flags it (`tieUnresolved: true`) and the admin resolves it with `PATCH /groups/:id/tiebreak { order: [teamId, ...] }` (drawing of lots at the tournament desk). Knockout generation refuses to run while a qualification-relevant tie is unresolved.
+
+### 5. Knockout generation (`POST /categories/:id/knockout/generate`)
+
+Preconditions: all group matches of the category `FINISHED`, no unresolved qualification tie, `qualifiersPerGroup` set, not already generated.
+
+1. N = groups × qualifiersPerGroup and **must be exactly 4, 8, or 16** — no byes, no uneven brackets. This is enforced twice: when the admin sets `qualifiersPerGroup` (against the current group count, `422 INVALID_BRACKET_SIZE` with the valid options for that group count) and again at generation time.
+2. Seeding: rank all qualifiers by group position first (all group winners above all runners-up), then by points, goal difference, goals scored within the same position tier.
+3. Pairing: 1 vs N, 2 vs N−1, ... Best effort to avoid rematches of same-group teams in round 1 (swap seeds within the same tier if it resolves a clash).
+4. Rounds map to phases up to `FINAL`. Losers of the two `SEMIFINAL` matches feed a `THIRD_PLACE` match via `MATCH_LOSER` sources; the third-place match is slotted **before** the final.
+5. Knockout matches use the same slot mechanics. They are appended as new slots after the last existing slot of the tournament (knockout rounds of different categories can share slots to fill pitches). Sources resolve automatically: when a match finishes or a group completes, the server fills `homeTeamId`/`awayTeamId` of dependent matches and broadcasts `bracket.updated`.
+
+The knockout uses the same `matchDurationMin` as the group stage in v1. Per-phase durations are a v2 item (see Open Items).
+
+## API Reference
+
+Base path `/api`. `A` = admin JWT, `R` = approved referee JWT (assigned to the match where noted), `P` = public. All errors: `{ error: { code, message } }` with proper HTTP status. Mutating endpoints validate tournament/match state and return `409` on illegal transitions.
+
+### Auth
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/auth/register` | P | Referee sign-up `{ email, name, password }` → status `PENDING` |
+| POST | `/auth/login` | P | `{ email, password }` → `{ token, user }`; `403 REFEREE_PENDING` / `403 REFEREE_REJECTED` for non-approved referees |
+| GET | `/auth/me` | A/R | Current user |
+
+### Referee administration
+| GET | `/admin/referees?status=` | A | List referees; `?status=PENDING` backs the admin approval view |
+| POST | `/admin/referees/:id/approve` | A | `PENDING → APPROVED`, unlocks login |
+| POST | `/admin/referees/:id/reject` | A | `PENDING → REJECTED` |
+| DELETE | `/admin/referees/:id` | A | Hard delete. `409 REFEREE_HAS_ASSIGNMENTS` (`error.details.matchIds`) if the referee is assigned to any non-`FINISHED` match — reassign first. Finished matches keep their history but the referee link is nulled (`onDelete: SetNull`), so they read as "unbekannt". The auth hook re-checks existence, invalidating any live session |
+
+SSE event `referee.registered` (admin dashboard shows a badge when someone new signs up during the tournament).
+
+### Tournament setup
+| POST | `/tournaments` | A | `{ name, startAt, matchDurationMin, transitionMin, pitchCount }`; creates Pitch rows |
+| GET | `/tournaments` | P | List |
+| GET | `/tournaments/:id` | P | Detail incl. categories |
+| PATCH | `/tournaments/:id` | A | Editable while `DRAFT`/`SCHEDULED`; changing timing/pitchCount after generation requires regeneration |
+| DELETE | `/tournaments/:id` | A | Allowed in `DRAFT`, `SCHEDULED`, `FINISHED`; `409 TOURNAMENT_RUNNING` while `RUNNING`. Cascade-deletes all tournament-scoped data (categories, groups, teams, slots, matches, goals, pitches, audit entries); referee accounts are tournament-independent and remain |
+| POST | `/tournaments/:id/start` | A | `SCHEDULED → RUNNING`, puts slot 0 into `WAITING_READY` |
+| POST | `/tournaments/:id/finish` | A | `RUNNING → FINISHED`. `409 MATCHES_STILL_RUNNING` (`error.details.matchIds`) if any match is `READY`/`RUNNING` — a finished tournament must never contain a live match; run finish-running first |
+| POST | `/tournaments/:id/matches/finish-running` | A | Force-finishes every `RUNNING` match at its current score (normal downstream: slot finish, standings, knockout resolution, `match.finished` per match). Level knockout draws can't pick a winner and are skipped. Returns `{ finished: [matchId], skipped: [{ matchId, reason: "PENALTIES_REQUIRED" }] }`; audit-logged |
+
+### Structure (categories / groups / teams)
+| POST | `/tournaments/:id/categories` | A | `{ name, qualifiersPerGroup }` |
+| PATCH | `/categories/:id` | A | `qualifiersPerGroup` validated against {4, 8, 16} total qualifiers; locked once knockout generated |
+| DELETE | `/categories/:id` | A | |
+| POST | `/categories/:id/groups` | A | `{ name }` |
+| PATCH | `/groups/:id` | A | |
+| DELETE | `/groups/:id` | A | |
+| PATCH | `/groups/:id/tiebreak` | A | `{ order: [teamId] }` manual tie resolution |
+| POST | `/groups/:id/teams` | A | `{ name }` |
+| PATCH | `/teams/:id` | A | Rename / move group (pre-schedule only) |
+| DELETE | `/teams/:id` | A | Pre-schedule only |
+All structure mutations that would invalidate an existing schedule return `409 SCHEDULE_EXISTS` — admin must regenerate.
+
+### Scheduling
+| POST | `/tournaments/:id/schedule/generate` | A | Generates slots + group matches; response includes per-team rest stats `{ min, max, avg }` |
+| POST | `/categories/:id/knockout/generate` | A | See rules above |
+| GET | `/tournaments/:id/slots` | P | Slots with planned/actual/estimated starts |
+| GET | `/tournaments/:id/matches?categoryId=&groupId=&phase=&teamId=&status=` | P | Filterable match list |
+| GET | `/matches/:id` | P | Detail incl. goals |
+| PATCH | `/matches/:id` | A | Manual fixes: `{ pitchId?, slotId?, refereeId? }` — refereeId must be an `APPROVED` referee without another match in the same slot |
+
+### Referee flow
+| GET | `/referees/me/matches` | R | Own assignments with slot state and estimated start |
+| POST | `/matches/:id/ready` | R (assigned) | Match `SCHEDULED → READY`; only while its slot is `WAITING_READY` |
+| POST | `/matches/:id/unready` | R (assigned) | Undo before slot fires (team walked off again) |
+| POST | `/matches/:id/goals` | R (assigned) | `{ teamId, clientId? }`, match must be `RUNNING`. Idempotent on `clientId` (see Replay safety) |
+| DELETE | `/goals/:id` | R (own) / A | |
+| POST | `/matches/:id/finish` | R (assigned) / A | `409 PENALTIES_REQUIRED` on knockout draw |
+| POST | `/matches/:id/penalties` | R (assigned) / A | `{ home, away }`, home ≠ away. Idempotent on the result (see Replay safety) |
+
+### Push (referee notifications)
+| GET | `/push/public-key` | P | `{ enabled, key }` — `enabled:false` when no VAPID keypair is configured |
+| POST | `/push/subscribe` | R | `{ endpoint, keys: { p256dh, auth } }`, upserted on `endpoint` |
+| POST | `/push/unsubscribe` | R | `{ endpoint }`, idempotent |
+
+### Admin live control
+| GET | `/tournaments/:id/dashboard` | A | Current + next slot, per pitch: match, referee, ready status, score; unassigned upcoming matches; delay vs. plan |
+| POST | `/matches/:id/force-ready` | A | Override missing referee |
+| PATCH | `/matches/:id/result` | A | Post-hoc correction `{ scoreHome, scoreAway, pensHome?, pensAway? }` |
+
+### Public views
+| GET | `/groups/:id/standings` | P | Table with played/W/D/L/GF/GA/GD/points, `tieUnresolved` flag |
+| GET | `/categories/:id/bracket` | P | Knockout tree incl. unresolved sources ("Winner Group A" etc.) |
+| GET | `/tournaments/:id/teams/search?q=` | P | Name search, case-insensitive substring |
+| GET | `/teams/:id/matches` | P | All matches of a team, chronological, with pitch and estimated start |
+
+### Real-time
+| GET | `/tournaments/:id/events` | P | SSE stream |
+
+SSE event types: `slot.waiting-ready`, `match.ready`, `match.unready`, `slot.started`, `goal.scored`, `goal.deleted`, `match.finished`, `slot.finished`, `schedule.updated`, `standings.updated`, `bracket.updated`, `referee.registered` (id only — admin refetches the list via the authed endpoint, so no personal data leaks on the public stream). One public stream is enough — ready states and scores are not secrets, and the admin dashboard and referee UIs subscribe to the same stream and filter client-side. Payloads carry ids only where possible; clients refetch details.
+
+## State Machines
+
+```
+Tournament: DRAFT → SCHEDULED (schedule generated) → RUNNING → FINISHED
+Slot:       PENDING → WAITING_READY → RUNNING → FINISHED
+Match:      SCHEDULED → READY → RUNNING → FINISHED
+```
+Reject every transition not shown here with `409`. `RUNNING → FINISHED` on the
+tournament additionally requires no match to be `READY`/`RUNNING`
+(`409 MATCHES_STILL_RUNNING`); the admin force-finishes live matches via
+`POST /tournaments/:id/matches/finish-running` first.
+
+## Validation & Edge Cases
+
+- Group needs ≥ 2 teams before schedule generation; odd team counts get byes inside the round-robin.
+- `qualifiersPerGroup`: ≥ 1, < smallest group size, and groups × qualifiersPerGroup ∈ {4, 8, 16}.
+- Adding or deleting a group after `qualifiersPerGroup` is set re-runs the bracket-size check; if the combination becomes invalid, the mutation returns `422 INVALID_BRACKET_SIZE` and the admin must fix `qualifiersPerGroup` first.
+- A referee can hold at most one match per slot.
+- Goals only on `RUNNING` matches; ready only from the assigned referee on a `WAITING_READY` slot.
+- Deleting a team after scheduling is blocked; withdrawal during the tournament = admin removes its remaining matches from slots and the standings ignore unplayed matches (document this in the standings response).
+- Timestamps in UTC in the DB, tournament timezone (`Europe/Zurich`) applied client-side.
+- Rate-limit `/auth/login` and `/auth/register`.
+
+## Replay safety
+
+The referee client queues writes made with no signal and replays them on
+reconnect (see the frontend's `outbox.ts`). A replayed request is one whose
+*response* was lost, not necessarily one that failed — so the two endpoints that
+record a result must be idempotent, and both check that **before** the status
+check, not after:
+
+- `POST /matches/:id/goals` dedupes on `clientId`, unique on `Goal`. Two replays
+  racing each other lose to the unique index rather than double-count.
+- `POST /matches/:id/penalties` dedupes on the submitted result itself: an
+  identical resubmission for an already-finished match returns
+  `200 { duplicate: true }`. A *different* result for a decided match is a
+  correction, not a replay → `409 PENALTIES_ALREADY_SET` (use the admin result
+  editor).
+
+Order matters: by replay time the match is usually already `FINISHED`, so a
+status check that ran first would answer `409 MATCH_NOT_RUNNING` to a write that
+in fact landed — and the client, correctly, drops rejected items. That is how a
+recorded goal gets reported to the referee as lost.
+
+## Push (referee notifications)
+
+Web Push via `web-push`, sent on two triggers only: a referee being **newly**
+assigned to a match (`PATCH /matches/:id` with a changed `refereeId`), and a slot
+entering `WAITING_READY` — the cue to walk to the pitch. Re-saving an existing
+assignment does not notify; a phone that buzzes for non-news gets muted before
+the first whistle.
+
+- **Optional by construction.** Without `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY`
+  the feature reports `enabled:false` and every send is a no-op, so dev machines
+  and test runs need no configuration. `npm run push:keys` prints a keypair;
+  rotating it invalidates every existing subscription.
+- **Sends never affect the request that triggered them.** They fire from inside
+  slot cascades and admin edits, so they are fire-and-forget and swallow their
+  own errors. A referee's dead endpoint cannot fail an admin's assignment.
+- Expired endpoints (`404`/`410`) are pruned as they are discovered.
+- `slot.waiting-ready` is broadcast from three places — `slotService`,
+  `knockoutService`, `POST /tournaments/:id/start` — and each notifies.
+
+## Conventions
+
+- REST, JSON, camelCase.
+- Every write endpoint: Zod schema → state check → transaction → SSE broadcast, in that order.
+- Scheduler, standings, and bracket logic live in pure functions under `src/domain/` with no I/O — unit test them exhaustively (rest balancing, tiebreakers, byes, semifinal-loser routing).
+- No soft deletes; the audit trail for scores is the Goal table plus a simple `AuditLog` table for admin result corrections.
+
+## Open Items (deliberately v2)
+- Team contact data / registration self-service.

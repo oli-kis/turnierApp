@@ -3,6 +3,7 @@ import { useMatches, useSlots, useTournament } from "../../api/queries";
 import { ScoreCard } from "../../components/ScoreCard";
 import { CardSkeleton, Skeleton } from "../../components/Skeleton";
 import { EmptyState } from "../../components/EmptyState";
+import { InstallPrompt } from "../../components/InstallPrompt";
 import { Tag } from "../../components/Tag";
 import { formatSlotTime, delayLabel } from "../../lib/time";
 import type { MatchListItem, Slot } from "../../api/types";
@@ -103,6 +104,9 @@ export function TournamentHome() {
           <EmptyState title="Noch keine Kategorien" />
         )}
       </section>
+
+      {/* Last, never above the scores — this is the page parents keep open. */}
+      <InstallPrompt />
     </div>
   );
 }

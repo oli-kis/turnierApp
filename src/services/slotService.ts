@@ -1,4 +1,5 @@
 import { prisma } from "../db/client.js";
+import { notifySlotWaitingReady } from "./pushService.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
 /**
@@ -81,6 +82,7 @@ async function finishSlotAndAdvance(tournamentId: string, slotId: string): Promi
       slotId: next.id,
       index: next.index,
     });
+    notifySlotWaitingReady(next.id);
     // A newly-opened slot may already be empty (all matches withdrawn).
     await maybeStartSlot(tournamentId, next.id);
   }

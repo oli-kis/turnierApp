@@ -4,6 +4,7 @@ import { Errors } from "../lib/errors.js";
 import { computeStandings } from "../domain/standings.js";
 import { generateBracket, type Qualifier, type BracketMatch } from "../domain/bracket.js";
 import { plannedStart } from "../domain/time.js";
+import { notifySlotWaitingReady } from "./pushService.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
 export interface KnockoutResult {
@@ -278,4 +279,5 @@ async function activateFirstIdleSlot(tournamentId: string): Promise<void> {
 
   await prisma.slot.update({ where: { id: next.id }, data: { status: "WAITING_READY" } });
   broadcaster.broadcast(tournamentId, "slot.waiting-ready", { slotId: next.id, index: next.index });
+  notifySlotWaitingReady(next.id);
 }

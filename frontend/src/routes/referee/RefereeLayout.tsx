@@ -1,10 +1,15 @@
 import { Outlet, useNavigate } from "react-router-dom";
 import { ProtectedRoute } from "../ProtectedRoute";
 import { useAuth } from "../../auth/AuthContext";
+import { useOutboxFlush } from "../../api/useOutbox";
 
 export function RefereeLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  // Anywhere under /ref, not just on the match screen: a referee who taps
+  // „Spiel beenden" offline and walks back to their match list must still have
+  // that write land as soon as the signal returns.
+  useOutboxFlush();
 
   return (
     <ProtectedRoute role="REFEREE">

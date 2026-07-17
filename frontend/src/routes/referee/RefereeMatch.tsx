@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import * as ref from "../../api/endpoints/referee";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { listMatches } from "../../api/endpoints/matches";
 import { ApiError } from "../../api/client";
 import { useMatch, useTournament, qk } from "../../api/queries";
+import { newClientId, sendOrQueue } from "../../api/outbox";
+import { useOutboxFlush, useOutboxState, usePendingGoals } from "../../api/useOutbox";
 import { useTournamentEvents } from "../../api/sse";
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components/Button";
@@ -20,13 +21,15 @@ import type { MatchDetail } from "../../api/types";
 
 export function RefereeMatch() {
   const { id } = useParams();
-  const { data: match, isLoading, isError } = useMatch(id);
+  const { data: match, isLoading } = useMatch(id);
   useTournamentEvents(match?.tournamentId);
+  useOutboxFlush(id);
   const online = useOnline();
+  const { pending, flushing } = useOutboxState();
 
   return (
     <div className="flex min-h-[calc(100dvh-57px)] flex-col">
-      <OfflineBanner show={!online} />
+      <OfflineBanner show={!online || pending > 0} pending={pending} flushing={flushing} />
       <div className="border-b border-[var(--color-line)] px-4 py-2">
         <Link to="/ref" className="text-sm font-semibold text-[var(--color-pine)]">
           ← Meine Spiele
@@ -37,7 +40,10 @@ export function RefereeMatch() {
         <div className="p-4">
           <CardSkeleton />
         </div>
-      ) : isError || !match || !id ? (
+      ) : !match || !id ? (
+        // Only when there is nothing to show. A failed *refetch* must not take
+        // the scoring screen away mid-match — the referee still has the match in
+        // cache and possibly goals queued; the offline banner already says so.
         <div className="p-4">
           <ErrorState message="Spiel konnte nicht geladen werden." />
         </div>
@@ -52,6 +58,42 @@ export function RefereeMatch() {
   );
 }
 
+/* ------------------------------------------------- optimistic cache helpers */
+
+/**
+ * Every referee write must reach `sendOrQueue`, offline included.
+ *
+ * TanStack Query's default `networkMode: "online"` *pauses* a mutation while the
+ * browser reports offline: `onMutate` runs, `mutationFn` does not, and the write
+ * waits in memory for a reconnect. That silently bypasses the outbox and, worse,
+ * dies with the tab — a goal tapped in a dead spot would be gone if the referee
+ * closed the app before signal returned. "always" hands the write to the outbox,
+ * which persists it and owns the retry. Do not remove.
+ */
+const OUTBOX_MUTATION = { networkMode: "always" } as const;
+
+interface Rollback {
+  prev?: MatchDetail;
+}
+
+/**
+ * The referee sees the result of a tap even when it only reached the outbox —
+ * the queue guarantees it lands, so the UI must not pretend nothing happened.
+ */
+function setStatusOptimistically(
+  qc: QueryClient,
+  matchId: string,
+  status: MatchDetail["status"],
+): Rollback {
+  const prev = qc.getQueryData<MatchDetail>(qk.match(matchId));
+  qc.setQueryData<MatchDetail>(qk.match(matchId), (old) => (old ? { ...old, status } : old));
+  return { prev };
+}
+
+function rollback(qc: QueryClient, matchId: string, ctx: Rollback | undefined): void {
+  if (ctx?.prev) qc.setQueryData(qk.match(matchId), ctx.prev);
+}
+
 /* ---------------------------------------------------------------- Waiting */
 
 function WaitingPhase({ match, matchId }: { match: MatchDetail; matchId: string }) {
@@ -59,13 +101,21 @@ function WaitingPhase({ match, matchId }: { match: MatchDetail; matchId: string 
   const slotWaiting = match.slot?.status === "WAITING_READY";
   const isReady = match.status === "READY";
 
+  // Ready/unready go through the outbox: the referee taps „bereit" exactly when
+  // 22 phones are fighting for the same cell, and the tap must not be lost.
   const readyMut = useMutation({
-    mutationFn: () => ref.ready(matchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.match(matchId) }),
+    ...OUTBOX_MUTATION,
+    mutationFn: () => sendOrQueue({ kind: "match.ready", matchId }),
+    onMutate: () => setStatusOptimistically(qc, matchId, "READY"),
+    onError: (_e, _v, ctx) => rollback(qc, matchId, ctx),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.match(matchId) }),
   });
   const unreadyMut = useMutation({
-    mutationFn: () => ref.unready(matchId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.match(matchId) }),
+    ...OUTBOX_MUTATION,
+    mutationFn: () => sendOrQueue({ kind: "match.unready", matchId }),
+    onMutate: () => setStatusOptimistically(qc, matchId, "SCHEDULED"),
+    onError: (_e, _v, ctx) => rollback(qc, matchId, ctx),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.match(matchId) }),
   });
 
   return (
@@ -150,10 +200,13 @@ function RunningPhase({ match, matchId }: { match: MatchDetail; matchId: string 
   const [disabledSide, setDisabledSide] = useState<"home" | "away" | null>(null);
   const [confirmFinish, setConfirmFinish] = useState(false);
   const [penaltyOpen, setPenaltyOpen] = useState(false);
+  const pendingGoals = usePendingGoals(matchId);
 
   const addGoal = useMutation({
-    mutationFn: (teamId: string) => ref.addGoal(matchId, teamId),
-    onMutate: async (teamId) => {
+    ...OUTBOX_MUTATION,
+    mutationFn: ({ teamId, clientId }: { teamId: string; clientId: string }) =>
+      sendOrQueue({ kind: "goal.add", matchId, teamId, clientId }),
+    onMutate: async ({ teamId }) => {
       await qc.cancelQueries({ queryKey: qk.match(matchId) });
       const prev = qc.getQueryData<MatchDetail>(qk.match(matchId));
       qc.setQueryData<MatchDetail>(qk.match(matchId), (old) =>
@@ -167,38 +220,100 @@ function RunningPhase({ match, matchId }: { match: MatchDetail; matchId: string 
       );
       return { prev };
     },
-    onError: (err, _teamId, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(qk.match(matchId), ctx.prev);
       toast.show(err instanceof ApiError ? err.message : "Tor konnte nicht gespeichert werden", "error");
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.match(matchId) }),
   });
 
+  /**
+   * Undo works the same for a goal the server has and for one still queued: the
+   * queued case never reaches the network — the outbox cancels the pending
+   * `goal.add` instead, since the server has never heard of that id.
+   */
   const deleteGoal = useMutation({
-    mutationFn: (goalId: string) => ref.deleteGoal(goalId),
+    ...OUTBOX_MUTATION,
+    mutationFn: ({ id }: { id: string; teamId: string }) =>
+      sendOrQueue({ kind: "goal.delete", goalId: id }),
+    onMutate: async ({ id, teamId }) => {
+      await qc.cancelQueries({ queryKey: qk.match(matchId) });
+      const prev = qc.getQueryData<MatchDetail>(qk.match(matchId));
+      qc.setQueryData<MatchDetail>(qk.match(matchId), (old) => {
+        if (!old) return old;
+        const home = teamId === old.homeTeamId;
+        return {
+          ...old,
+          scoreHome: home ? Math.max(0, old.scoreHome - 1) : old.scoreHome,
+          scoreAway: home ? old.scoreAway : Math.max(0, old.scoreAway - 1),
+          goals: old.goals?.filter((g) => g.id !== id),
+        };
+      });
+      return { prev };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(qk.match(matchId), ctx.prev);
+      toast.show(err instanceof ApiError ? err.message : "Tor konnte nicht gelöscht werden", "error");
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.match(matchId) }),
   });
 
   const finish = useMutation({
-    mutationFn: () => ref.finishMatch(matchId),
-    onSuccess: () => {
+    ...OUTBOX_MUTATION,
+    mutationFn: () => sendOrQueue({ kind: "match.finish", matchId }),
+    onSuccess: (sent) => {
       setConfirmFinish(false);
+      if (!sent) {
+        toast.show("Offline — Spiel wird beendet, sobald du wieder Empfang hast", "info");
+      }
       qc.invalidateQueries({ queryKey: qk.match(matchId) });
     },
     onError: (err) => {
       setConfirmFinish(false);
+      // Defence in depth: the client decides this itself below, so reaching here
+      // means the two disagreed (a goal landed from elsewhere between render and
+      // tap). The server is the authority — open the sheet.
       if (err instanceof ApiError && err.code === "PENALTIES_REQUIRED") {
         setPenaltyOpen(true);
       }
     },
   });
 
+  /**
+   * Whether this match needs penalties is decided here rather than by asking the
+   * server and waiting for `409 PENALTIES_REQUIRED`.
+   *
+   * That 409 needs a connection. Offline there is nothing to answer it: the
+   * finish would be queued, replayed on reconnect, rejected with exactly that
+   * 409, and — per the outbox's HTTP-error rule — dropped with a toast. The
+   * referee would be left with an unfinished knockout match and no result. The
+   * client knows the same two facts the server checks (knockout, drawn), so it
+   * asks for the result up front and queues *that* instead.
+   */
+  const needsPenalties = isKnockout(match.phase) && match.scoreHome === match.scoreAway;
+
+  const requestFinish = () => {
+    setConfirmFinish(false);
+    if (needsPenalties) {
+      setPenaltyOpen(true);
+      return;
+    }
+    finish.mutate();
+  };
+
   const tap = (side: "home" | "away", teamId: string | null | undefined) => {
     if (!teamId || disabledSide) return;
     setDisabledSide(side);
     setTimeout(() => setDisabledSide(null), 400); // guard against double-taps
-    addGoal.mutate(teamId);
+    addGoal.mutate({ teamId, clientId: newClientId() });
   };
+
+  // Newest first: acknowledged goals from the server, queued ones on top —
+  // both undoable, so a goal is never stuck just because the phone lost signal.
+  const undoList = [
+    ...pendingGoals.map((g) => ({ id: g.id, teamId: g.teamId, pending: true })),
+    ...[...(match.goals ?? [])].reverse().map((g) => ({ id: g.id, teamId: g.teamId, pending: false })),
+  ];
 
   return (
     <div className="flex flex-1 flex-col">
@@ -229,21 +344,28 @@ function RunningPhase({ match, matchId }: { match: MatchDetail; matchId: string 
 
       {/* Recent goals + finish */}
       <div className="border-t border-[var(--color-line)] p-3">
-        {match.goals && match.goals.length > 0 && (
+        {undoList.length > 0 && (
           <div className="mb-3 max-h-28 space-y-1 overflow-y-auto">
-            {[...match.goals].reverse().map((g) => {
+            {undoList.map((g) => {
               const home = g.teamId === match.homeTeamId;
               return (
                 <div
                   key={g.id}
                   className="flex items-center justify-between rounded border border-[var(--color-line)] px-3 py-1.5 text-sm"
                 >
-                  <span className="font-semibold">
-                    Tor {home ? match.homeTeam?.name : match.awayTeam?.name}
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-semibold">
+                      Tor {home ? match.homeTeam?.name : match.awayTeam?.name}
+                    </span>
+                    {g.pending && (
+                      <span className="shrink-0 font-semibold text-[var(--color-live)]">
+                        wird gesendet
+                      </span>
+                    )}
                   </span>
                   <button
-                    onClick={() => deleteGoal.mutate(g.id)}
-                    className="font-semibold text-[var(--color-loss)]"
+                    onClick={() => deleteGoal.mutate({ id: g.id, teamId: g.teamId })}
+                    className="shrink-0 font-semibold text-[var(--color-loss)]"
                   >
                     Löschen
                   </button>
@@ -261,6 +383,11 @@ function RunningPhase({ match, matchId }: { match: MatchDetail; matchId: string 
         <p className="mb-4 text-[var(--color-ink)]/70">
           Endstand {match.homeTeam?.name} {match.scoreHome} : {match.scoreAway} {match.awayTeam?.name}
         </p>
+        {needsPenalties && (
+          <p className="mb-4 font-semibold text-[var(--color-ink)]">
+            Unentschieden — als Nächstes das Penaltyresultat.
+          </p>
+        )}
         <div className="flex gap-3">
           <Button variant="secondary" size="lg" className="flex-1" onClick={() => setConfirmFinish(false)}>
             Abbrechen
@@ -269,10 +396,10 @@ function RunningPhase({ match, matchId }: { match: MatchDetail; matchId: string 
             variant="danger"
             size="lg"
             className="flex-1"
-            onClick={() => finish.mutate()}
+            onClick={requestFinish}
             disabled={finish.isPending}
           >
-            Beenden
+            {needsPenalties ? "Weiter" : "Beenden"}
           </Button>
         </div>
       </Sheet>
@@ -334,13 +461,39 @@ function PenaltySheet({
   awayName: string;
 }) {
   const qc = useQueryClient();
+  const toast = useToast();
   const [home, setHome] = useState(0);
   const [away, setAway] = useState(0);
+
+  /**
+   * Through the outbox like every other referee write. A penalty result is the
+   * one that decides who goes through, and it is tapped in the loudest, worst-
+   * connected minute of the day — losing it to a dead spot is not survivable.
+   *
+   * The server dedupes an identical resubmission, so a replay of a request whose
+   * response was lost reports success instead of MATCH_NOT_RUNNING.
+   */
   const submit = useMutation({
-    mutationFn: () => ref.submitPenalties(matchId, home, away),
-    onSuccess: () => {
+    ...OUTBOX_MUTATION,
+    mutationFn: () => sendOrQueue({ kind: "match.penalties", matchId, home, away }),
+    onSuccess: (sent) => {
+      if (!sent) {
+        toast.show("Offline — Resultat wird gesendet, sobald du wieder Empfang hast", "info");
+      }
       onClose();
+      // Claimed only once the outbox has taken responsibility, never in onMutate:
+      // the queue guarantees it lands, so showing the finished match is honest —
+      // but flipping the status unmounts this sheet, so it has to come last.
+      qc.setQueryData<MatchDetail>(qk.match(matchId), (old) =>
+        old ? { ...old, status: "FINISHED", pensHome: home, pensAway: away } : old,
+      );
       qc.invalidateQueries({ queryKey: qk.match(matchId) });
+    },
+    onError: (err) => {
+      toast.show(
+        err instanceof ApiError ? err.message : "Penaltyresultat konnte nicht gespeichert werden",
+        "error",
+      );
     },
   });
 

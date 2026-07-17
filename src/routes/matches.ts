@@ -6,6 +6,7 @@ import { requireAdmin } from "../plugins/auth.js";
 import { getMatchOr404 } from "../lib/loaders.js";
 import { estimatedStartsBySlot } from "../lib/estimates.js";
 import { maybeStartSlot } from "../services/slotService.js";
+import { notifyRefereeAssigned } from "../services/pushService.js";
 import { broadcaster } from "../sse/broadcaster.js";
 
 const idParam = z.object({ id: z.string() });
@@ -133,6 +134,13 @@ export async function matchRoutes(app: FastifyInstance): Promise<void> {
     });
 
     broadcaster.broadcast(match.tournamentId, "schedule.updated", { matchId: id });
+    // Notify only a referee who is newly on this match. Re-saving the same
+    // assignment, or moving the pitch of a match they already know about, is not
+    // news — and a phone that buzzes for non-news gets its notifications turned
+    // off before the tournament starts.
+    if (body.refereeId != null && body.refereeId !== match.refereeId) {
+      notifyRefereeAssigned(id, body.refereeId);
+    }
     // Removing a match from a slot may let that slot fire without it.
     if (body.slotId === null && match.slotId) {
       await maybeStartSlot(match.tournamentId, match.slotId);

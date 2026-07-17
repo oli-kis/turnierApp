@@ -42,6 +42,12 @@ npm run seed:admin # create/refresh the admin account
 - **Synchronized starts:** slot WAITING_READY → all matches READY → RUNNING,
   finish cascade to the next slot, admin `force-ready`, computed estimated starts.
 - **Live scoring:** goals add/delete, finish, knockout penalties path.
+  `POST /matches/:id/goals` takes an optional `clientId` idempotency key: the
+  referee app queues goals tapped without signal and replays them on reconnect,
+  so a request whose response was lost must not score twice. A replayed key
+  returns the existing goal as `200 { goalId, duplicate: true }` instead of
+  creating one. The dedupe runs before the RUNNING check — by replay time the
+  match is often finished, and a goal that IS recorded has to report success.
 - **Standings:** computed on read with the full tiebreaker chain,
   `tieUnresolved` flagging, and manual tiebreak-by-lots
   (`PATCH /groups/:id/tiebreak`).

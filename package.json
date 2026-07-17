@@ -13,6 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
+    "push:keys": "tsx src/scripts/generateVapidKeys.ts",
+    "push:test": "tsx src/scripts/testPush.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"
   },
@@ -22,11 +24,13 @@
     "@prisma/client": "^6.1.0",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.1.0",
+    "web-push": "^3.6.7",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.10.2",
+    "@types/web-push": "^3.6.4",
     "prisma": "^6.1.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

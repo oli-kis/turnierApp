@@ -5,6 +5,8 @@ import { formatTime } from "../../lib/time";
 import { Tag, LiveTag } from "../../components/Tag";
 import { CardSkeleton } from "../../components/Skeleton";
 import { EmptyState } from "../../components/EmptyState";
+import { InstallPrompt } from "../../components/InstallPrompt";
+import { NotificationPrompt } from "../../components/NotificationPrompt";
 import type { RefereeMatch } from "../../api/types";
 
 /** My matches, grouped by slot, the next actionable one pinned on top. */
@@ -22,8 +24,13 @@ export function RefereeHome() {
 
   if (!data || data.length === 0) {
     return (
-      <div className="p-4">
+      <div className="space-y-4 p-4">
         <EmptyState title="Noch keine Spiele zugeteilt" hint="Die Turnierleitung teilt dir Spiele zu." />
+        {/* Best moment to install and opt in: before the first whistle, not
+            during it — and with no matches yet, "you'll be told when you're
+            assigned" is exactly the answer to the empty state. */}
+        <InstallPrompt />
+        <NotificationPrompt />
       </div>
     );
   }
@@ -68,6 +75,11 @@ export function RefereeHome() {
           </div>
         </section>
       ))}
+
+      <div className="space-y-3">
+        <InstallPrompt />
+        <NotificationPrompt />
+      </div>
     </div>
   );
 }

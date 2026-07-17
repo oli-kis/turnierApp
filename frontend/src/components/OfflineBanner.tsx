@@ -19,11 +19,34 @@ export function useOnline(): boolean {
   return online;
 }
 
-export function OfflineBanner({ show }: { show: boolean }) {
+interface OfflineBannerProps {
+  show: boolean;
+  /** Referee writes queued in the outbox, waiting for a connection. */
+  pending?: number;
+  flushing?: boolean;
+}
+
+/**
+ * Says what happened to the taps, not just that the connection is gone: the
+ * referee needs to know their goals are held and will land, and the banner stays
+ * up while the queue drains after the signal returns.
+ */
+export function OfflineBanner({ show, pending = 0, flushing = false }: OfflineBannerProps) {
   if (!show) return null;
+
+  const message = flushing
+    ? `Wird gesendet … (${pending})`
+    : pending > 0
+      ? `Offline — ${pending} ${pending === 1 ? "Aktion wartet" : "Aktionen warten"} auf Verbindung`
+      : "Keine Verbindung — Aktionen werden erst gesendet, wenn du wieder online bist.";
+
   return (
-    <div className="sticky top-0 z-40 bg-[var(--color-live)] px-4 py-2 text-center text-sm font-semibold text-white">
-      Keine Verbindung — Aktionen werden erst gesendet, wenn du wieder online bist.
+    <div
+      role="status"
+      aria-live="polite"
+      className="sticky top-0 z-40 bg-[var(--color-live)] px-4 py-2 text-center text-sm font-semibold text-white tabular-nums"
+    >
+      {message}
     </div>
   );
 }

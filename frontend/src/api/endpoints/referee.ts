@@ -16,11 +16,15 @@ export function unready(matchId: string) {
   return apiRequest(`/matches/${matchId}/unready`, { method: "POST" });
 }
 
-export function addGoal(matchId: string, teamId: string) {
+/**
+ * `clientId` is the outbox idempotency key: the backend returns the existing
+ * goal instead of scoring a second one when a queued tap is replayed.
+ */
+export function addGoal(matchId: string, teamId: string, clientId?: string) {
   return apiRequest(`/matches/${matchId}/goals`, {
     method: "POST",
-    body: { teamId },
-    schema: z.object({ goalId: z.string() }),
+    body: clientId ? { teamId, clientId } : { teamId },
+    schema: z.object({ goalId: z.string(), duplicate: z.boolean().optional() }),
   });
 }
 

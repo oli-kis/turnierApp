@@ -10,6 +10,7 @@ import { GroupPage } from "./routes/public/GroupPage";
 import { BracketPage } from "./routes/public/BracketPage";
 import { TeamsSearch } from "./routes/public/TeamsSearch";
 import { TeamPage } from "./routes/public/TeamPage";
+import { BeamerView } from "./routes/public/BeamerView";
 
 // Auth / Referee
 import { Login } from "./routes/auth/Login";
@@ -47,6 +48,10 @@ export const router = createBrowserRouter([
         ],
       },
       { path: "/team/:teamId", element: <TeamPage /> },
+
+      // Outside TournamentLayout on purpose: the beamer gets no nav, no header,
+      // no max-width — the whole screen is the display.
+      { path: "/t/:id/beamer", element: <BeamerView /> },
 
       { path: "/ref/login", element: <Login mode="referee" /> },
       { path: "/ref/registrieren", element: <RefereeRegister /> },

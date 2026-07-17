@@ -97,6 +97,15 @@ export function AdminLive() {
           <Link to={`/admin/t/${id}/spiele`} className={buttonClass("secondary")}>
             Alle Spiele
           </Link>
+          {/* New tab: the beamer runs on its own screen while the desk keeps working. */}
+          <a
+            href={`/t/${id}/beamer`}
+            target="_blank"
+            rel="noopener"
+            className={buttonClass("secondary")}
+          >
+            Beamer
+          </a>
           {tournament?.status === "SCHEDULED" && (
             <Button onClick={() => start.mutate()} disabled={start.isPending}>
               Turnier starten

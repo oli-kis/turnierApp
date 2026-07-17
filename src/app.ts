@@ -14,6 +14,7 @@ import { matchRoutes } from "./routes/matches.js";
 import { adminLiveRoutes } from "./routes/adminLive.js";
 import { publicRoutes } from "./routes/publicViews.js";
 import { eventRoutes } from "./routes/events.js";
+import { pushRoutes } from "./routes/push.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -54,6 +55,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     adminLiveRoutes,
     publicRoutes,
     eventRoutes,
+    pushRoutes,
   ];
   for (const register of modules) {
     await app.register(register, { prefix: "/api" });

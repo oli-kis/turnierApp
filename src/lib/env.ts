@@ -14,6 +14,13 @@ const schema = z.object({
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD: z.string().min(1).optional(),
   ADMIN_NAME: z.string().min(1).default("Tournament Admin"),
+  // Web Push (referee notifications). All three or none: without a keypair the
+  // feature reports itself unavailable and sends are skipped, so a dev machine
+  // or a club that never wants push needs no configuration at all.
+  // `npm run push:keys` prints a fresh pair.
+  VAPID_PUBLIC_KEY: z.string().min(1).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(1).optional(),
+  VAPID_SUBJECT: z.string().min(1).default("mailto:admin@fcfrick.ch"),
 });
 
 export const env = schema.parse(process.env);

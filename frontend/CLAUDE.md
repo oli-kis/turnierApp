@@ -8,8 +8,6 @@ Frontend for the FC Frick tournament backend (see the backend repo's CLAUDE.md f
 | **Referee** | Approved referees | Phone in hand pitchside, gloves possible, glare, stress |
 | **Admin** | Tournament desk | Laptop/tablet at the info stand |
 
-Rename this file to `CLAUDE.md` in the frontend repository root.
-
 ## Tech Stack
 
 - **Vite + React 19 + TypeScript (strict)** — plain SPA. The backend is a separate Fastify API; no SSR needed, everything is live data anyway.
@@ -37,6 +35,8 @@ src/
     endpoints/       # one typed function per backend endpoint
     queries.ts       # TanStack Query hooks (keys defined here, nowhere else)
     sse.ts           # EventSource lifecycle + event→invalidation map
+    outbox.ts        # offline write queue for referee actions
+    useOutbox.ts     # React bindings for the outbox (state, flush triggers)
   routes/
     public/          # /, /t/:id, standings, bracket, team search
     referee/         # /ref/*
@@ -87,6 +87,19 @@ Every backend endpoint has exactly one home. When implementing, check off agains
 | GET `/tournaments/:id/teams/search?q=` | Public team search |
 | GET `/teams/:id/matches` | Public team page |
 | GET `/tournaments/:id/events` | `sse.ts`, subscribed on every tournament-scoped route |
+| GET `/push/public-key` | `NotificationPrompt` — whether to offer the toggle at all, plus the key to subscribe with |
+| POST `/push/subscribe` `/unsubscribe` | `NotificationPrompt` toggle on `/ref` |
+
+### Offline write queue (`outbox.ts`)
+
+Every referee write (`goal.add` / `goal.delete` / `match.ready` / `match.unready` / `match.finish` / `match.penalties`) goes through `sendOrQueue`, never through the endpoint directly. Online with an empty queue → sent now; otherwise persisted to `localStorage` (`outbox.v1`) and replayed in order on the `online` event, on mount, and on a 15 s tick while pending.
+
+- **`networkMode: "always"` is mandatory on these mutations.** TanStack Query's default pauses a mutation while offline — `onMutate` runs, `mutationFn` does not — which bypasses the outbox and leaves the goal in memory to die with the tab. This is the whole failure the queue exists to prevent.
+- **Replay semantics:** network error → stop, keep the queue. HTTP error → drop that item and toast it (a 409 is a legal race; retrying forever would wedge the queue and hide the truth). `404` on `goal.delete` is success — already gone.
+- **Coalescing:** a new ready/unready drops the pending one for that match; undoing a still-queued goal removes its `goal.add` rather than queueing a delete for an id the server never saw; a new `match.penalties` drops both the previous result for that match and any queued `match.finish` — the penalties endpoint finishes the match itself, and a finish replayed after it would be reported to the referee as a failure.
+- **Idempotency:** each goal tap mints a `clientId` sent to `POST /matches/:id/goals`. The backend returns the existing goal (`200 {duplicate:true}`) instead of scoring twice, so a replay of a request whose response was lost cannot double-count. That dedupe runs *before* the RUNNING check, so a replay landing after the match finished still reports success. `POST /matches/:id/penalties` gets the same guarantee without a `clientId`: a penalty result is a value, not a countable event, so the backend dedupes on the result itself.
+- **Penalties are queued, not asked for.** The referee normally learns that penalties are needed from `409 PENALTIES_REQUIRED` — an answer that needs a connection. Offline, a queued `match.finish` would be replayed into that 409 and dropped, leaving a knockout match undecided. So the client evaluates the same two facts the server checks (knockout, drawn) and opens the penalty sheet itself; the 409 path stays as defence in depth for when the two disagree.
+- A failed *refetch* must never replace the referee screen with an error state — cached data plus the offline banner is the correct pitchside behaviour.
 
 ### SSE handling (`sse.ts`)
 
@@ -117,6 +130,7 @@ Route names and UI copy are **German** (de-CH: 24-h times, `14:30`, no AM/PM). C
 - `/t/:id/gruppe/:groupId` — Full standings table (Sp/S/U/N/Tore/TD/Pkt) + all group matches with results.
 - `/t/:id/tabelle` → bracket view per category: classic tree, unresolved slots labeled from `homeSource`/`awaySource` („Sieger Gruppe A", „Verlierer HF 1").
 - `/t/:id/teams` — Search-as-you-type (debounced 300 ms) → `/team/:teamId`: the team's full day, chronological, each row with time (estimated, live-updating), pitch, opponent, result. This page is what parents bookmark — it must be perfect on a 360-px screen.
+- `/t/:id/beamer` — Big-screen mode for the clubhouse projector, outside `TournamentLayout` (no nav, no header, no max-width). The deck builds itself from live data (`buildBeamerPages`): „Jetzt läuft" (or „Als Nächstes" when nothing runs) → one page per group table → one per generated bracket; a page with nothing to show is never emitted. Cycles every 15 s (`?interval=`), `?scale=` sizes it for the room via `zoom` on the stage — the shared components are reused untouched rather than growing a fourth ScoreCard size. Space pauses, ←/→ step, F fullscreen. The dwell bar is **pine, not live** — it is a UI timer, not tournament time. Launched from the admin live header in a new tab.
 
 ### Referee (`/ref`)
 
@@ -125,7 +139,7 @@ Route names and UI copy are **German** (de-CH: 24-h times, `14:30`, no AM/PM). C
 - `/ref/spiel/:id` — The one screen that matters. Full-height layout, three phases:
   1. **Waiting**: opponent names huge, pitch name, estimated start. One button: **„Beide Teams bereit"** — minimum 64 px tall, full width. After tapping: confirmation state with an „Doch nicht bereit" undo, plus „Warten auf andere Plätze" with a live n/m ready counter (SSE).
   2. **Running** (flips automatically on `slot.started`): scoreboard with a client-side count-up clock from `slot.actualStart`, turning `--live` colored past `matchDurationMin`. Two giant `+1` zones (left/right half of the screen, one per team), an undo row listing recent goals with delete, and **„Spiel beenden"** behind a confirm sheet.
-  3. **Finish**: on knockout draw the `409 PENALTIES_REQUIRED` response opens the penalty sheet (two steppers, home ≠ away enforced client-side too).
+  3. **Finish**: a knockout draw routes „Spiel beenden" into the penalty sheet (two steppers, home ≠ away enforced client-side too) instead of finishing. Decided client-side so it works with no signal — see the outbox notes; `409 PENALTIES_REQUIRED` still opens the same sheet if the server disagrees.
   - Goal taps must feel instant: optimistic increment, rollback + toast on failure. Disable the tapped zone for 400 ms to prevent double-taps.
   - `navigator.onLine` false or a failed mutation → sticky offline banner; never silently drop a goal.
 
@@ -181,8 +195,85 @@ The **live score card**: pitch name as an eyebrow, two team names, the tabular s
 - Times: always show estimated start when it differs from planned, formatted „14:42 (geplant 14:30)". The kickoff time is the single most important datum for players/parents, so **every** match rendering shows it in display weight (tabular): `MatchRow` leads with it, `ScoreCard` shows it as the eyebrow when not running, and the match list / team-day endpoints carry each match's `plannedStart` + `estimatedStart` so no view can forget it.
 - LIVE guard (defence in depth): the LIVE badge and count-up clock render only when `match.status === "RUNNING"` **and** the tournament is `RUNNING`. `MatchRow` and `ScoreCard` take an optional `tournamentStatus` for this — a finished tournament must never show a live match.
 
+## PWA
+
+`vite-plugin-pwa` (`autoUpdate`), `injectManifest` strategy — the worker is hand-written in `src/sw.ts` rather than generated, because push needs real listeners and workbox cannot generate those. Everything the generated worker did is restated there on purpose: the caching contract is a product decision, not a default.
+
+The app shell and fonts are precached; **`/api` is never cached** — everything under it is live tournament data, and a cached standings table on tournament day is worse than a spinner. It is reached by having no route match it (so it goes straight to the network) plus a `denylist` on the navigation fallback, which must never swallow an API call or the SSE stream. Offline writes are the outbox's job, not the service worker's. The SW ships only in a real build (`devOptions.enabled: false`), so `npm run preview` (proxied to the API, same as dev) is the only way to exercise it.
+
+Icons come from `npm run icons` (`scripts/generate-icons.mjs`): the scoreboard mark drawn as plain rectangles and encoded with node's `zlib`, so there is no native image dependency to install on a build machine. Re-run it if the palette changes.
+
+`InstallPrompt` sits at the bottom of `/ref` and `/t/:id` — never above the scores. It uses the real `beforeinstallprompt` where it exists and falls back to „Teilen → Zum Home-Bildschirm" instructions on iOS Safari, which has no such event; dismissal is remembered.
+
+### Push notifications
+
+`NotificationPrompt` sits beside `InstallPrompt` at the bottom of `/ref`, same rule: nothing outranks the schedule. Referees are notified on assignment and when their slot opens for ready-checks (`lib/push.ts` owns enrolment, `sw.ts` the `push` / `notificationclick` handlers).
+
+It renders **nothing** unless push can actually be honoured — the backend has VAPID keys (`GET /push/public-key`), the browser has the APIs, and permission isn't already denied. Two rules worth keeping:
+
+- **The browser is the authority on subscription state**, not our database: permission can be revoked in system settings without telling us, so the toggle reads `pushManager.getSubscription()` rather than trusting a stored flag.
+- **iOS has push only in an installed PWA** — Safari exposes no `PushManager` in a normal tab, so roughly half the referees can only opt in after adding the app to the home screen. That case says so and points at `InstallPrompt`; it never shows a toggle that would silently fail.
+
+Push needs a **secure context** — see „Testing on a real phone" below.
+
+## Testing on a real phone
+
+This is a phone app used outdoors; it has to be exercised on one. Two routes, and
+the choice is not taste — it decides what is testable at all.
+
+**The rule that governs everything here: service workers, PWA install and push
+require a secure context.** `localhost` and HTTPS qualify; `http://<lan-ip>` does
+not. Over LAN HTTP the browser exposes no `PushManager`, so `NotificationPrompt`
+correctly renders *nothing* — indistinguishable from a bug unless you know why.
+
+### LAN — fast, for everyday UI work
+
+```bash
+npm run dev -- --host     # → http://192.168.x.x:5173
+```
+
+Phone on the same Wi-Fi, open that URL. The `/api` proxy runs on the laptop, so
+**the phone only ever talks to :5173** — the API port never needs to be reachable.
+
+Windows blocks this by default: an inbound rule is needed, and if the Wi-Fi is
+categorised `Public` (Windows' default for a home router) the rule must match
+that profile. Prefer marking the home network `Private` and scoping the rule to
+it, rather than opening a port on every public network you ever join:
+
+```powershell
+# elevated, once
+Set-NetConnectionProfile -InterfaceAlias "WLAN" -NetworkCategory Private
+New-NetFirewallRule -DisplayName "Vite mobile testing" -Direction Inbound `
+  -Protocol TCP -LocalPort 5173,4173 -Action Allow -Profile Private
+```
+
+Gets you: the whole app, HMR, real touch targets in real sunlight — **including
+the offline outbox**, which is plain `localStorage` + `fetch` and needs no SW, so
+airplane-mode scoring is testable here. Does *not* get you: install prompt, push,
+or SW precache (loading the app while offline).
+
+### Tunnel — HTTPS, for the PWA surface
+
+```bash
+npm run build && npm run preview                      # SW ships only in a real build
+npx cloudflared tunnel --url http://localhost:4173    # → https://<random>.trycloudflare.com
+```
+
+No firewall rule and no admin: the tunnel is an *outbound* connection, which is
+why this is often the easier route on a locked-down laptop, not the harder one.
+One tunnel covers both — preview proxies `/api`, so app and API share an origin:
+no CORS, no mixed content. `allowedHosts: true` on both servers is what lets the
+tunnel's `Host` through; without it Vite 6 answers „Blocked request" before the
+app loads. Tunnelling `dev` (5173) works too and keeps HMR, but the SW is off in
+dev, so push and install still need `preview`.
+
+For push specifically: `npm run push:keys` on the backend first (paste into
+`.env`, restart), then on the phone log in as an **approved** referee —
+**iPhone: Share → „Zum Home-Bildschirm" and reopen from the icon**, or there is
+no `PushManager` — and switch „Benachrichtigungen" on. `npm run push:test --
+<referee-email>` then fires a real notification through the production send path,
+so delivery can be checked without staging a tournament.
+
 ## Open Items (v2)
 
-- PWA install + offline goal queue (v1 only guards against silent loss).
-- Big-screen mode: auto-cycling standings/live view for a beamer at the clubhouse.
-- Push notifications for referees.
+- Push covers assignment and `slot.waiting-ready`. Not yet: a nudge when the referee's slot is `WAITING_READY` but *their* match is still unready — the one operational gap notifications could still close.
