@@ -60,6 +60,19 @@ export const TournamentSchema = z.object({
   transitionMin: z.number(),
   pitchCount: z.number(),
   status: TournamentStatusSchema,
+  // Self-service registration. The fee is in Rappen — money never becomes a
+  // float on the way through.
+  //
+  // Required, not `.default()`: these are non-null columns with defaults, and no
+  // tournament endpoint uses a Prisma `select`, so the API always sends them.
+  // `.default()` would also be actively harmful here — it makes a schema whose
+  // input and output types differ, and `apiRequest`'s `ZodType<T>` collapses the
+  // two, so every consumer would silently receive the *input* type with these
+  // fields optional. Fail loudly on a missing field instead of quietly inventing
+  // a zero fee.
+  entryFeeRp: z.number(),
+  registrationOpen: z.boolean(),
+  registrationDeadline: z.string().nullish(),
 });
 export type Tournament = z.infer<typeof TournamentSchema>;
 
@@ -96,6 +109,46 @@ export const TournamentDetailSchema = TournamentSchema.extend({
   categories: z.array(CategorySchema).optional(),
 });
 export type TournamentDetail = z.infer<typeof TournamentDetailSchema>;
+
+/* ------------------------------------------------------- team registration */
+
+export const RegistrationStatusSchema = z.enum([
+  "PENDING_PAYMENT",
+  "PAID",
+  "EXPIRED",
+  "CANCELED",
+]);
+export type RegistrationStatus = z.infer<typeof RegistrationStatusSchema>;
+
+/**
+ * The public status of a registration — deliberately no contact data: the id
+ * lives in a URL the payer may paste or share.
+ */
+export const RegistrationPublicStatusSchema = z.object({
+  status: RegistrationStatusSchema,
+  teamName: z.string(),
+  categoryName: z.string(),
+});
+export type RegistrationPublicStatus = z.infer<typeof RegistrationPublicStatusSchema>;
+
+/** The admin view — the one place contact data is exposed. */
+export const RegistrationSchema = z.object({
+  id: z.string(),
+  teamName: z.string(),
+  contactName: z.string(),
+  contactEmail: z.string(),
+  contactPhone: z.string(),
+  status: RegistrationStatusSchema,
+  amountRp: z.number(),
+  categoryId: z.string(),
+  categoryName: z.string(),
+  teamId: z.string().nullish(),
+  createdAt: z.string(),
+  paidAt: z.string().nullish(),
+  expiresAt: z.string(),
+  stripeUrl: z.string(),
+});
+export type Registration = z.infer<typeof RegistrationSchema>;
 
 export const SlotSchema = z.object({
   id: z.string(),

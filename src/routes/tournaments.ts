@@ -23,6 +23,10 @@ const patchSchema = z
     matchDurationMin: z.number().int().positive().optional(),
     transitionMin: z.number().int().nonnegative().optional(),
     pitchCount: z.number().int().positive().optional(),
+    // Self-service registration. Fee in Rappen — money is never a float.
+    entryFeeRp: z.number().int().nonnegative().optional(),
+    registrationOpen: z.boolean().optional(),
+    registrationDeadline: z.coerce.date().nullable().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: "No fields to update" });
 

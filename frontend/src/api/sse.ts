@@ -106,6 +106,12 @@ function makeHandlers(qc: QueryClient, tid: string): Record<string, (p: Payload)
     "referee.registered": () => {
       qc.invalidateQueries({ queryKey: ["referees"] });
     },
+    // A team paid. The admin's Anmeldungen list gains a row, and the group
+    // editor gains an unassigned team to place.
+    "registration.paid": () => {
+      qc.invalidateQueries({ queryKey: qk.registrationLists(tid) });
+      qc.invalidateQueries({ queryKey: qk.tournament(tid) });
+    },
   };
 }
 
@@ -122,6 +128,7 @@ export const SSE_EVENT_TYPES = [
   "standings.updated",
   "bracket.updated",
   "referee.registered",
+  "registration.paid",
 ] as const;
 
 /** Exposed for unit testing the mapping without a live EventSource. */

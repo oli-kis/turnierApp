@@ -11,12 +11,38 @@ const hm = new Intl.DateTimeFormat("de-CH", {
   timeZone: TZ,
 });
 
+const dmy = new Intl.DateTimeFormat("de-CH", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  timeZone: TZ,
+});
+
 /** „14:30" */
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "–";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "–";
   return hm.format(d);
+}
+
+/**
+ * „16.05.2026" — for dates away from tournament day (registration deadline,
+ * tournament date), where a bare time would be meaningless.
+ */
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return "–";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "–";
+  return dmy.format(d);
+}
+
+/** „16.05.2026, 23:59" — a deadline needs both halves to be actionable. */
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "–";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "–";
+  return `${dmy.format(d)}, ${hm.format(d)}`;
 }
 
 /**

@@ -38,6 +38,30 @@ export async function generateGroupSchedule(tournamentId: string): Promise<Gener
     throw Errors.conflict("REGEN_FORBIDDEN", "Cannot regenerate after a slot has started");
   }
 
+  // Registration must be shut before the schedule is fixed, or a team could pay
+  // its way into a tournament whose fixtures are already published.
+  if (tournament.registrationOpen) {
+    throw Errors.conflict(
+      "REGISTRATION_STILL_OPEN",
+      "Close registration before generating the schedule",
+    );
+  }
+
+  // Every paid team must be in a group. A team sitting in the unassigned pool
+  // would otherwise be silently dropped from the schedule it just paid for —
+  // the failure mode that costs the club a phone call on tournament morning.
+  const unassigned = await prisma.team.findMany({
+    where: { groupId: null, category: { tournamentId } },
+    select: { id: true, name: true, categoryId: true },
+  });
+  if (unassigned.length > 0) {
+    throw Errors.conflict(
+      "UNASSIGNED_TEAMS",
+      `${unassigned.length} team(s) are not assigned to a group`,
+      { teams: unassigned },
+    );
+  }
+
   // Collect every group (across categories) that has teams; validate sizes.
   const groups: GroupInput[] = [];
   for (const category of tournament.categories) {

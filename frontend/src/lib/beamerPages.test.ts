@@ -41,6 +41,10 @@ const tournament = (categories: Category[]): TournamentDetail => ({
   id: "t1",
   name: "FC Frick Turnier",
   startAt: "2026-05-16T08:00:00.000Z",
+  // A tournament on the beamer is running, so registration is necessarily shut:
+  // the schedule cannot be generated while it is open.
+  entryFeeRp: 10000,
+  registrationOpen: false,
   matchDurationMin: 12,
   transitionMin: 3,
   pitchCount: 2,

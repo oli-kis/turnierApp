@@ -25,9 +25,11 @@ npm run push:keys    # print a VAPID keypair for .env (see Push); optional
 npm run push:test -- <referee-email>   # send a real test notification to their devices
 ```
 
-Env: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `ADMIN_*`. Push adds the optional
-`VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` — omit them and push
-is simply off.
+Env: `DATABASE_URL`, `JWT_SECRET`, `PORT`, `ADMIN_*`. Two optional feature
+blocks, each simply off when unset:
+- Push: `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`.
+- Registration: `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `PUBLIC_BASE_URL`
+  (+ `RESEND_API_KEY` / `MAIL_FROM` once the mailer has a provider).
 
 ## Roles & Auth
 
@@ -60,9 +62,13 @@ model Tournament {
   transitionMin      Int               // e.g. 3
   pitchCount         Int
   status             TournamentStatus  // DRAFT | SCHEDULED | RUNNING | FINISHED
+  entryFeeRp           Int      @default(0)  // Rappen; registration needs > 0
+  registrationOpen     Boolean  @default(false)
+  registrationDeadline DateTime?
   categories         Category[]
   pitches            Pitch[]
   slots              Slot[]
+  registrations      Registration[]
 }
 
 model Pitch {
@@ -92,8 +98,9 @@ model Group {
 model Team {
   id         String @id @default(cuid())
   categoryId String
-  groupId    String?
+  groupId    String?   // null = the category's "unassigned pool" (paid, not placed)
   name       String
+  @@unique([categoryId, name])  // see Registration: this is what settles the race
 }
 
 model Slot {
@@ -136,6 +143,23 @@ model Goal {
   clientId  String? @unique  // idempotency key minted by the referee's outbox
   createdAt DateTime @default(now())
   createdBy String   // referee userId, for audit
+}
+
+model Registration {              // team self-service entry (see Registration below)
+  id              String @id @default(cuid())
+  tournamentId    String
+  categoryId      String
+  teamName        String
+  contactName     String
+  contactEmail    String
+  contactPhone    String
+  status          RegistrationStatus // PENDING_PAYMENT | PAID | EXPIRED | CANCELED
+  amountRp        Int                // fee snapshot at creation
+  stripeSessionId String @unique
+  teamId          String? @unique    // set when the Team is created on payment
+  createdAt       DateTime @default(now())
+  paidAt          DateTime?
+  expiresAt       DateTime           // createdAt + 30 min, mirrors the Session
 }
 
 model PushSubscription {          // one row per referee device (see Push below)
@@ -267,6 +291,13 @@ All structure mutations that would invalidate an existing schedule return `409 S
 | POST | `/matches/:id/finish` | R (assigned) / A | `409 PENALTIES_REQUIRED` on knockout draw |
 | POST | `/matches/:id/penalties` | R (assigned) / A | `{ home, away }`, home ≠ away. Idempotent on the result (see Replay safety) |
 
+### Team registration
+| POST | `/registrations` | P | `{ tournamentId, categoryId, teamName, contactName, contactEmail, contactPhone }` → `{ registrationId, checkoutUrl }`. Rate-limited 20/10 min per IP. `409 REGISTRATION_CLOSED` / `REGISTRATION_NOT_CONFIGURED` / `TEAM_NAME_TAKEN` |
+| GET | `/registrations/:id/status` | P | `{ status, teamName, categoryName }` — **no contact data**; the id sits in a shareable URL |
+| POST | `/webhooks/stripe` | Stripe signature | `checkout.session.completed` → PAID + Team; `checkout.session.expired` → EXPIRED |
+| GET | `/tournaments/:id/registrations?status=` | A | Full list incl. contact data + `stripeUrl` |
+| POST | `/registrations/:id/cancel` | A | PAID + team unassigned & unscheduled → deletes the Team, sets CANCELED. **Refund is manual** |
+
 ### Push (referee notifications)
 | GET | `/push/public-key` | P | `{ enabled, key }` — `enabled:false` when no VAPID keypair is configured |
 | POST | `/push/subscribe` | R | `{ endpoint, keys: { p256dh, auth } }`, upserted on `endpoint` |
@@ -286,7 +317,7 @@ All structure mutations that would invalidate an existing schedule return `409 S
 ### Real-time
 | GET | `/tournaments/:id/events` | P | SSE stream |
 
-SSE event types: `slot.waiting-ready`, `match.ready`, `match.unready`, `slot.started`, `goal.scored`, `goal.deleted`, `match.finished`, `slot.finished`, `schedule.updated`, `standings.updated`, `bracket.updated`, `referee.registered` (id only — admin refetches the list via the authed endpoint, so no personal data leaks on the public stream). One public stream is enough — ready states and scores are not secrets, and the admin dashboard and referee UIs subscribe to the same stream and filter client-side. Payloads carry ids only where possible; clients refetch details.
+SSE event types: `slot.waiting-ready`, `match.ready`, `match.unready`, `slot.started`, `goal.scored`, `goal.deleted`, `match.finished`, `slot.finished`, `schedule.updated`, `standings.updated`, `bracket.updated`, `referee.registered`, `registration.paid` (both id only — the admin refetches over the authed endpoint, so no personal data leaks on the public stream; a registration carries a name, an email and a phone number, none of which belong on a stream anyone can open). One public stream is enough — ready states and scores are not secrets, and the admin dashboard and referee UIs subscribe to the same stream and filter client-side. Payloads carry ids only where possible; clients refetch details.
 
 ## State Machines
 
@@ -332,6 +363,71 @@ status check that ran first would answer `409 MATCH_NOT_RUNNING` to a write that
 in fact landed — and the client, correctly, drops rejected items. That is how a
 recorded goal gets reported to the referee as lost.
 
+## Registration (team self-service + payment)
+
+Teams register themselves for a planned tournament and pay the entry fee via
+Stripe Checkout (TWINT + card, CHF). **A Team exists only after payment
+succeeded** — until then the Registration is the sole record of the intent, and
+it holds the team name so two clubs cannot check out under the same name at once.
+Paid = registered; no admin approval. Refunds are manual in the Stripe dashboard
+(v1), except the collision path below.
+
+- **Optional by construction**, like push: no `STRIPE_SECRET_KEY` /
+  `PUBLIC_BASE_URL` → `REGISTRATION_NOT_CONFIGURED`, the same code as a missing
+  fee. From the payer's side both mean "the club hasn't finished setting this up".
+- **`PUBLIC_BASE_URL` is the *browser's* origin**, not the API's — Stripe
+  redirects the payer there. Trailing slashes are normalised.
+- **The fee is snapshotted** onto the Registration at creation: a later fee
+  change must not move the goalposts for a checkout already quoted.
+- **The name hold is 30 min**, mirroring the Checkout Session expiry. A name is
+  blocked by existing Teams + `PAID` + non-expired `PENDING_PAYMENT` rows.
+- **Case-insensitivity is done in JS, not SQL.** Prisma's `mode: "insensitive"`
+  is Postgres-only and this also runs on SQLite, where the query would silently
+  become case-*sensitive* — i.e. behave differently in dev and production.
+
+### The name-collision race
+
+Two payers check out as "Falcons"; both pay. First `completed` wins. The loser is
+refunded automatically, set `CANCELED`, and emailed an apology. Two mechanisms,
+because neither covers the other:
+
+- `@@unique([categoryId, name])` on Team catches the identical-name race that
+  slips between the check and the insert. This is *why* that constraint exists.
+- An in-transaction re-check catches case-*differing* collisions, which an exact
+  unique index cannot see.
+
+Both funnel into one handler, which **never throws**: it runs inside the webhook,
+and a failed refund must not make Stripe retry a fulfilment that succeeded. A
+refund that fails is logged and left for the dashboard; the admin list carries
+the payment link.
+
+### Interaction with scheduling
+
+Schedule generation additionally requires `registrationOpen === false`
+(`409 REGISTRATION_STILL_OPEN`) and no team with `groupId: null` in any category
+(`409 UNASSIGNED_TEAMS`, team ids in `error.details.teams`). Both guard the same
+disaster: a team that paid and is then missing from the fixtures.
+
+Registrations cascade with the tournament — contact data is collected to run the
+tournament and must not outlive it (Swiss DSG).
+
+### Email
+
+Currently a **seam, not an integration**: `services/mailer.ts` logs what it would
+send. Wiring Resend or SMTP is a change to `deliver` alone. The rule the shape
+enforces: a confirmation must never fail the thing it confirms — by then the
+money has moved — so `send` swallows everything. Stripe's own receipt email is
+enabled in the dashboard rather than rebuilt.
+
+### Local dev
+
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe   # prints whsec_…
+```
+The webhook does **not** need a tunnel (the CLI connects outbound); the payer
+redirect does — `PUBLIC_BASE_URL` must be a public HTTPS origin serving the
+frontend. See the frontend's „Testing on a real phone".
+
 ## Push (referee notifications)
 
 Web Push via `web-push`, sent on two triggers only: a referee being **newly**
@@ -359,4 +455,12 @@ the first whistle.
 - No soft deletes; the audit trail for scores is the Goal table plus a simple `AuditLog` table for admin result corrections.
 
 ## Open Items (deliberately v2)
-- Team contact data / registration self-service.
+
+- **Pick an email provider.** `services/mailer.ts` is a seam that logs; the
+  confirmation and the collision-refund apology are written but not sent.
+- In-app refunds. Today the admin cancel deletes the team and links the Stripe
+  payment; the money is moved by hand.
+- Registration editing by the team (wrong team name, changed contact).
+- Reminder email before the deadline.
+- Waitlists / capacity per category — explicitly excluded, not forgotten.
+- Multi-team discount.

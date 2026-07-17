@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "icons": "node scripts/generate-icons.mjs",
+    "tunnel": "npx --yes cloudflared tunnel --url http://localhost:5173",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",

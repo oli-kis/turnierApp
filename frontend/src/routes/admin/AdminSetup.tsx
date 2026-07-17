@@ -3,21 +3,31 @@ import { Link, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updateTournament } from "../../api/endpoints/tournaments";
 import { generateSchedule } from "../../api/endpoints/structure";
-import { useTournament, useSlots, qk } from "../../api/queries";
+import { ApiError } from "../../api/client";
+import { useTournament, useSlots, useRegistrations, qk } from "../../api/queries";
+import { useTournamentEvents } from "../../api/sse";
 import { useToast } from "../../components/Toast";
 import { Button } from "../../components/Button";
 import { Sheet } from "../../components/Sheet";
 import { CardSkeleton } from "../../components/Skeleton";
 import { StructureSection } from "./StructureSection";
 import { RefereeAssignmentSection } from "./RefereeAssignmentSection";
-import type { RestStats } from "../../api/types";
+import { RegistrationsSection } from "./RegistrationsSection";
+import { formatChf, inputToRappen, rappenToInput } from "../../lib/money";
+import type { RestStats, Tournament } from "../../api/types";
 
 export function AdminSetup() {
   const { id } = useParams();
   const { data: tournament, isLoading } = useTournament(id);
   const { data: slots } = useSlots(id);
+  const { data: registrations } = useRegistrations(id);
+  // Registrations arrive while the admin is on this page, so the list and the
+  // unassigned-team pool have to update themselves (`registration.paid`).
+  useTournamentEvents(id);
 
   if (isLoading || !tournament) return <CardSkeleton />;
+
+  const paidCount = registrations?.filter((r) => r.status === "PAID").length ?? 0;
 
   return (
     <div className="space-y-5">
@@ -32,22 +42,36 @@ export function AdminSetup() {
         <GrunddatenForm tournamentId={id!} tournament={tournament} />
       </Section>
 
-      <Section n={2} title="Kategorien, Gruppen & Teams">
+      <Section n={2} title="Anmeldungen" badge={paidCount || undefined}>
+        <RegistrationsSection tournamentId={id!} />
+      </Section>
+
+      <Section n={3} title="Kategorien, Gruppen & Teams">
         <StructureSection tournamentId={id!} categories={tournament.categories ?? []} />
       </Section>
 
-      <Section n={3} title="Schiedsrichter zuweisen">
+      <Section n={4} title="Schiedsrichter zuweisen">
         <RefereeAssignmentSection tournamentId={id!} />
       </Section>
 
-      <Section n={4} title="Spielplan">
+      <Section n={5} title="Spielplan">
         <ScheduleSection tournamentId={id!} slotCount={slots?.length ?? 0} />
       </Section>
     </div>
   );
 }
 
-function Section({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+function Section({
+  n,
+  title,
+  badge,
+  children,
+}: {
+  n: number;
+  title: string;
+  badge?: number;
+  children: ReactNode;
+}) {
   return (
     <section className="rounded-[var(--radius-card)] border border-[var(--color-line)] bg-[var(--color-chalk)] p-4">
       <h2 className="mb-3 flex items-center gap-2 font-display text-lg font-extrabold">
@@ -55,6 +79,11 @@ function Section({ n, title, children }: { n: number; title: string; children: R
           {n}
         </span>
         {title}
+        {badge !== undefined && (
+          <span className="rounded-full bg-[var(--color-pine)]/10 px-2 py-0.5 text-sm font-bold tabular-nums text-[var(--color-pine)]">
+            {badge}
+          </span>
+        )}
       </h2>
       {children}
     </section>
@@ -72,7 +101,7 @@ function GrunddatenForm({
   tournament,
 }: {
   tournamentId: string;
-  tournament: { name: string; startAt: string; matchDurationMin: number; transitionMin: number; pitchCount: number };
+  tournament: Tournament;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -81,6 +110,18 @@ function GrunddatenForm({
   const [dur, setDur] = useState(tournament.matchDurationMin);
   const [trans, setTrans] = useState(tournament.transitionMin);
   const [pitch, setPitch] = useState(tournament.pitchCount);
+  // The fee is typed in francs and stored in Rappen; see lib/money.
+  const [fee, setFee] = useState(() => rappenToInput(tournament.entryFeeRp));
+  const [regOpen, setRegOpen] = useState(tournament.registrationOpen);
+  const [deadline, setDeadline] = useState(
+    tournament.registrationDeadline ? toLocalInput(tournament.registrationDeadline) : "",
+  );
+
+  const feeRp = inputToRappen(fee);
+  const feeInvalid = fee.trim() !== "" && feeRp === null;
+  // Opening registration with no fee would let a team reach a checkout the
+  // backend refuses (REGISTRATION_NOT_CONFIGURED). Catch it at the field.
+  const openWithoutFee = regOpen && (feeRp ?? 0) <= 0;
 
   const save = useMutation({
     mutationFn: () =>
@@ -90,6 +131,9 @@ function GrunddatenForm({
         matchDurationMin: dur,
         transitionMin: trans,
         pitchCount: pitch,
+        entryFeeRp: feeRp ?? 0,
+        registrationOpen: regOpen,
+        registrationDeadline: deadline ? new Date(deadline).toISOString() : null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.tournament(tournamentId) });
@@ -119,8 +163,63 @@ function GrunddatenForm({
       <Labeled label="Wechselzeit (min)">
         <input type="number" min={0} value={trans} onChange={(e) => setTrans(Number(e.target.value))} className={inputCls} />
       </Labeled>
+
+      <fieldset className="grid gap-3 border-t border-[var(--color-line)] pt-3 sm:col-span-2 sm:grid-cols-2">
+        <legend className="sr-only">Anmeldung</legend>
+        <Labeled label="Startgeld (CHF)">
+          <input
+            inputMode="decimal"
+            placeholder="z. B. 100"
+            value={fee}
+            onChange={(e) => setFee(e.target.value)}
+            aria-invalid={feeInvalid || undefined}
+            className={inputCls}
+          />
+          {feeInvalid ? (
+            <span className="mt-1 block text-sm font-semibold text-[var(--color-loss)]">
+              Betrag in Franken, z. B. 100 oder 85.50
+            </span>
+          ) : (
+            <span className="mt-1 block text-sm text-[var(--color-ink)]/60">
+              {(feeRp ?? 0) > 0 ? `Teams zahlen ${formatChf(feeRp!)}` : "Leer = keine Anmeldung"}
+            </span>
+          )}
+        </Labeled>
+        <Labeled label="Anmeldeschluss (optional)">
+          <input
+            type="datetime-local"
+            value={deadline}
+            onChange={(e) => setDeadline(e.target.value)}
+            className={inputCls}
+          />
+          <span className="mt-1 block text-sm text-[var(--color-ink)]/60">
+            Leer = kein Schluss, nur der Schalter zählt.
+          </span>
+        </Labeled>
+        <label className="flex items-start gap-3 sm:col-span-2">
+          <input
+            type="checkbox"
+            checked={regOpen}
+            onChange={(e) => setRegOpen(e.target.checked)}
+            className="mt-1 h-5 w-5 shrink-0"
+          />
+          <span>
+            <span className="block font-semibold">Anmeldung offen</span>
+            <span className="block text-sm text-[var(--color-ink)]/60">
+              Teams können sich selbst anmelden und bezahlen. Muss geschlossen sein, bevor der
+              Spielplan erstellt werden kann.
+            </span>
+            {openWithoutFee && (
+              <span className="mt-1 block text-sm font-semibold text-[var(--color-loss)]">
+                Ohne Startgeld kann sich niemand anmelden — zuerst einen Betrag setzen.
+              </span>
+            )}
+          </span>
+        </label>
+      </fieldset>
+
       <div className="sm:col-span-2">
-        <Button type="submit" disabled={save.isPending}>
+        <Button type="submit" disabled={save.isPending || feeInvalid || openWithoutFee}>
           Speichern
         </Button>
       </div>
@@ -153,6 +252,13 @@ function ScheduleSection({ tournamentId, slotCount }: { tournamentId: string; sl
     },
   });
 
+  /**
+   * The two registration guards are not errors so much as unfinished steps, so
+   * they render as instructions with the fix in them — not a toast that scrolls
+   * away from the button that caused it.
+   */
+  const blocker = registrationBlocker(generate.error);
+
   return (
     <div className="space-y-3">
       <p className="text-sm text-[var(--color-ink)]/70">
@@ -160,6 +266,23 @@ function ScheduleSection({ tournamentId, slotCount }: { tournamentId: string; sl
           ? `Spielplan vorhanden: ${slotCount} Runden. Neu erstellen ersetzt den bestehenden Plan (nur vor dem Start).`
           : "Erstellt den Rundenplan aus allen Gruppen. Die Pausen-Statistik wird danach angezeigt."}
       </p>
+
+      {blocker && (
+        <div
+          role="alert"
+          className="rounded-[var(--radius-card)] border border-[var(--color-live)] bg-white p-3"
+        >
+          <p className="font-semibold">{blocker.message}</p>
+          {blocker.teams && (
+            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm">
+              {blocker.teams.map((t) => (
+                <li key={t.id}>{t.name}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <Button onClick={() => generate.mutate()} disabled={generate.isPending}>
         {slotCount > 0 ? "Spielplan neu erstellen" : "Spielplan erstellen"}
       </Button>
@@ -184,6 +307,35 @@ function ScheduleSection({ tournamentId, slotCount }: { tournamentId: string; sl
       </Sheet>
     </div>
   );
+}
+
+interface Blocker {
+  message: string;
+  teams?: Array<{ id: string; name: string }>;
+}
+
+/**
+ * Turn the two registration-related 409s into something the admin can act on.
+ *
+ * Both mean "a step is missing", not "something broke": the schedule cannot be
+ * fixed while teams can still buy their way in, and a paid team with no group
+ * would be silently left out of the fixtures it paid for.
+ */
+function registrationBlocker(error: unknown): Blocker | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.code === "REGISTRATION_STILL_OPEN") {
+    return { message: "Anmeldung ist noch offen — zuerst unter Grunddaten schliessen." };
+  }
+  if (error.code === "UNASSIGNED_TEAMS") {
+    const teams = (error.details as { teams?: Array<{ id: string; name: string }> } | undefined)
+      ?.teams;
+    const n = teams?.length ?? 0;
+    return {
+      message: `${n} ${n === 1 ? "Team ist" : "Teams sind"} noch keiner Gruppe zugeteilt — unter „Kategorien, Gruppen & Teams“ zuweisen.`,
+      teams,
+    };
+  }
+  return null;
 }
 
 function Stat({ label, value }: { label: string; value: number }) {

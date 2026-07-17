@@ -125,6 +125,8 @@ function CategoryEditor({ category, onChanged }: { category: Category; onChanged
       </div>
       {qualError && <p className="mb-3 text-sm font-semibold text-[var(--color-loss)]">{qualError}</p>}
 
+      <UnassignedPool category={category} onChanged={onChanged} />
+
       <div className="space-y-3">
         {(category.groups ?? []).map((g) => (
           <GroupEditor key={g.id} group={g} onChanged={onChanged} />
@@ -158,6 +160,76 @@ function CategoryEditor({ category, onChanged }: { category: Category; onChanged
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Teams that paid but have no group yet — where every self-service registration
+ * lands.
+ *
+ * Shown in the live accent colour and never hidden when non-empty: the schedule
+ * refuses to generate while anyone sits here (`UNASSIGNED_TEAMS`), and a team
+ * that paid and then does not appear in the fixtures is the failure this whole
+ * feature must not produce.
+ */
+function UnassignedPool({ category, onChanged }: { category: Category; onChanged: () => void }) {
+  const groups = category.groups ?? [];
+  const unassigned = (category.teams ?? []).filter((t) => !t.groupId);
+  if (unassigned.length === 0) return null;
+
+  return (
+    <div className="mb-3 rounded-[var(--radius-card)] border border-[var(--color-live)] bg-white p-3">
+      <p className="font-semibold">
+        {unassigned.length} {unassigned.length === 1 ? "Team" : "Teams"} ohne Gruppe
+      </p>
+      <p className="mb-2 text-sm text-[var(--color-ink)]/70">
+        {groups.length === 0
+          ? "Zuerst eine Gruppe anlegen, dann zuteilen."
+          : "Der Spielplan lässt sich erst erstellen, wenn alle zugeteilt sind."}
+      </p>
+      <ul className="space-y-1">
+        {unassigned.map((t) => (
+          <UnassignedTeamRow key={t.id} team={t} groups={groups} onChanged={onChanged} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function UnassignedTeamRow({
+  team,
+  groups,
+  onChanged,
+}: {
+  team: Team;
+  groups: Group[];
+  onChanged: () => void;
+}) {
+  const assign = useMutation({
+    mutationFn: (groupId: string) => struct.updateTeam(team.id, { groupId }),
+    onSuccess: onChanged,
+  });
+
+  return (
+    <li className="flex items-center justify-between gap-2">
+      <span className="min-w-0 truncate font-semibold">{team.name}</span>
+      <select
+        aria-label={`Gruppe für ${team.name}`}
+        defaultValue=""
+        disabled={groups.length === 0 || assign.isPending}
+        onChange={(e) => e.target.value && assign.mutate(e.target.value)}
+        className="h-10 shrink-0 rounded-lg border border-[var(--color-line)] px-2"
+      >
+        <option value="" disabled>
+          Gruppe wählen…
+        </option>
+        {groups.map((g) => (
+          <option key={g.id} value={g.id}>
+            {g.name}
+          </option>
+        ))}
+      </select>
+    </li>
   );
 }
 

@@ -5,6 +5,7 @@ import * as matches from "./endpoints/matches";
 import * as referee from "./endpoints/referee";
 import * as admin from "./endpoints/admin";
 import * as pub from "./endpoints/public";
+import * as registrations from "./endpoints/registrations";
 import type { MatchFilters } from "./endpoints/matches";
 import { getToken } from "./client";
 
@@ -27,6 +28,10 @@ export const qk = {
   teamMatches: (teamId: string) => ["teamMatches", teamId] as const,
   myMatches: () => ["myMatches"] as const,
   referees: (status?: string) => ["referees", status ?? "ALL"] as const,
+  registrations: (tournamentId: string, status?: string) =>
+    ["registrations", tournamentId, status ?? "ALL"] as const,
+  registrationLists: (tournamentId: string) => ["registrations", tournamentId] as const,
+  registrationStatus: (id: string) => ["registrationStatus", id] as const,
 };
 
 export function useMe() {
@@ -132,5 +137,32 @@ export function useReferees(status?: "APPROVED" | "PENDING" | "REJECTED") {
   return useQuery({
     queryKey: qk.referees(status),
     queryFn: () => admin.listReferees(status).then((r) => r.referees),
+  });
+}
+
+export function useRegistrations(tournamentId: string | undefined, status?: string) {
+  return useQuery({
+    queryKey: qk.registrations(tournamentId ?? "", status),
+    queryFn: () => registrations.listRegistrations(tournamentId!, status).then((r) => r.registrations),
+    enabled: !!tournamentId,
+  });
+}
+
+/**
+ * The payer's own status, polled while the webhook is still in flight.
+ *
+ * Stripe redirects the browser back the instant the payment is authorised, which
+ * regularly beats the webhook that records it — so PENDING_PAYMENT here means
+ * "not yet", not "failed". Polling stops as soon as it resolves; the caller caps
+ * how long it is willing to wait.
+ */
+export function useRegistrationStatus(id: string | undefined, poll: boolean) {
+  return useQuery({
+    queryKey: qk.registrationStatus(id ?? ""),
+    queryFn: () => registrations.getRegistrationStatus(id!),
+    enabled: !!id,
+    refetchInterval: poll ? 2000 : false,
+    // The redirect is a fresh page load; never answer it from a stale cache.
+    staleTime: 0,
   });
 }

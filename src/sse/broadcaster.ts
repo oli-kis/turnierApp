@@ -19,7 +19,10 @@ export type SseEventType =
   | "schedule.updated"
   | "standings.updated"
   | "bracket.updated"
-  | "referee.registered";
+  | "referee.registered"
+  // id only — the admin refetches over the authed endpoint. Contact data must
+  // never reach the public stream.
+  | "registration.paid";
 
 interface Subscriber {
   id: number;

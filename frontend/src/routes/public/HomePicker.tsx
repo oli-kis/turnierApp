@@ -2,6 +2,7 @@ import { Link, Navigate } from "react-router-dom";
 import { useTournaments } from "../../api/queries";
 import { formatTime } from "../../lib/time";
 import { Tag } from "../../components/Tag";
+import { RegistrationCta } from "../../components/RegistrationCta";
 import { CardSkeleton } from "../../components/Skeleton";
 import { EmptyState, ErrorState } from "../../components/EmptyState";
 
@@ -49,7 +50,10 @@ export function HomePicker() {
     <Shell>
       <ul className="space-y-3">
         {data.map((t) => (
-          <li key={t.id}>
+          // The registration action is a sibling of the card, not inside it: the
+          // card is already a link, and a link inside a link is invalid HTML
+          // that browsers resolve by guessing.
+          <li key={t.id} className="space-y-2">
             <Link
               to={`/t/${t.id}`}
               className="flex items-center justify-between rounded-[var(--radius-card)] border border-[var(--color-line)] bg-white p-4 hover:border-[var(--color-pine)]"
@@ -64,6 +68,7 @@ export function HomePicker() {
                 {STATUS_LABEL[t.status] ?? t.status}
               </Tag>
             </Link>
+            <RegistrationCta tournament={t} compact />
           </li>
         ))}
       </ul>

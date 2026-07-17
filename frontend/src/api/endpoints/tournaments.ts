@@ -19,6 +19,17 @@ export interface TournamentInput {
   pitchCount: number;
 }
 
+/**
+ * Registration settings, editable only via PATCH — a tournament is created
+ * without registration and opened for it later, once its categories exist.
+ * `registrationDeadline: null` clears the deadline.
+ */
+export interface RegistrationSettings {
+  entryFeeRp: number;
+  registrationOpen: boolean;
+  registrationDeadline: string | null;
+}
+
 export function listTournaments() {
   return apiRequest("/tournaments", { schema: TournamentsResponse });
 }
@@ -35,7 +46,10 @@ export function createTournament(input: TournamentInput) {
   });
 }
 
-export function updateTournament(id: string, patch: Partial<TournamentInput>) {
+export function updateTournament(
+  id: string,
+  patch: Partial<TournamentInput & RegistrationSettings>,
+) {
   return apiRequest(`/tournaments/${id}`, {
     method: "PATCH",
     body: patch,

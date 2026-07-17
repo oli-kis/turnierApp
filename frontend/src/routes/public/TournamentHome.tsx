@@ -4,6 +4,7 @@ import { ScoreCard } from "../../components/ScoreCard";
 import { CardSkeleton, Skeleton } from "../../components/Skeleton";
 import { EmptyState } from "../../components/EmptyState";
 import { InstallPrompt } from "../../components/InstallPrompt";
+import { RegistrationCta } from "../../components/RegistrationCta";
 import { Tag } from "../../components/Tag";
 import { formatSlotTime, delayLabel } from "../../lib/time";
 import type { MatchListItem, Slot } from "../../api/types";
@@ -31,6 +32,11 @@ export function TournamentHome() {
 
   return (
     <div className="space-y-8">
+      {/* Above the scores, unlike InstallPrompt: this one pays for the day, and
+          it can only ever appear before the tournament has a schedule — so
+          there are no scores here to push down. */}
+      {tournament && <RegistrationCta tournament={tournament} />}
+
       {/* Jetzt läuft */}
       <section>
         <SectionHeader title="Jetzt läuft" live={!!runningSlot} />

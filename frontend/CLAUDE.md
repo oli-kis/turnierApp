@@ -43,6 +43,8 @@ src/
     admin/           # /admin/*
   components/        # shared: ScoreBoard, MatchCard, StandingsTable, Tag, ...
   lib/               # time formatting (de-CH, 24h), match-state helpers
+                     # money.ts — Rappen ↔ CHF; the fee is never a float
+                     # registration.ts — the open/closed rule, mirrored from the backend
 ```
 
 ## API Integration
@@ -89,6 +91,10 @@ Every backend endpoint has exactly one home. When implementing, check off agains
 | GET `/tournaments/:id/events` | `sse.ts`, subscribed on every tournament-scoped route |
 | GET `/push/public-key` | `NotificationPrompt` — whether to offer the toggle at all, plus the key to subscribe with |
 | POST `/push/subscribe` `/unsubscribe` | `NotificationPrompt` toggle on `/ref` |
+| POST `/registrations` | `/t/:id/anmelden` step 3 → redirect to `checkoutUrl`. `409 TEAM_NAME_TAKEN` renders at the field |
+| GET `/registrations/:id/status` | `/t/:id/anmeldung/status` — polled 2 s while the webhook is in flight |
+| GET `/tournaments/:id/registrations` | Admin setup → Anmeldungen table |
+| POST `/registrations/:id/cancel` | Anmeldungen row action, behind the manual-refund notice |
 
 ### Offline write queue (`outbox.ts`)
 
@@ -115,6 +121,7 @@ One `EventSource` per open tournament, created by a `useTournamentEvents(tournam
 | `standings.updated` | standings |
 | `bracket.updated` | bracket, match lists |
 | `referee.registered` | admin referee list |
+| `registration.paid` | admin registration list, tournament (the new team joins the category's unassigned pool) |
 
 Reconnect with exponential backoff (max 15 s); on reconnect, invalidate everything tournament-scoped once — pitchside 4G will drop.
 
@@ -130,6 +137,9 @@ Route names and UI copy are **German** (de-CH: 24-h times, `14:30`, no AM/PM). C
 - `/t/:id/gruppe/:groupId` — Full standings table (Sp/S/U/N/Tore/TD/Pkt) + all group matches with results.
 - `/t/:id/tabelle` → bracket view per category: classic tree, unresolved slots labeled from `homeSource`/`awaySource` („Sieger Gruppe A", „Verlierer HF 1").
 - `/t/:id/teams` — Search-as-you-type (debounced 300 ms) → `/team/:teamId`: the team's full day, chronological, each row with time (estimated, live-updating), pitch, opponent, result. This page is what parents bookmark — it must be perfect on a 360-px screen.
+- `/t/:id/anmelden` — **Team anmelden**, three steps on one route: 1. Kategorie (fee shown once, prominently — it is identical everywhere, so repeating it per card only invites „is this one different?") 2. Team & Kontakt (inline validation; `TEAM_NAME_TAKEN` renders *at the field*, where the fix is) 3. Bezahlen (summary → `checkoutUrl`). The form is kept in `sessionStorage` because Stripe's `cancel_url` returns as a **fresh page load**, not a client-side nav — without it a payer having second thoughts about the payment method retypes everything. The draft is scoped to its tournament and cleared on success.
+- `/t/:id/anmeldung/status?rid=` — Stripe's `success_url`. **The redirect regularly beats the webhook**, so `PENDING_PAYMENT` here means „noch nicht", never „fehlgeschlagen" — „Zahlung wird bestätigt…", polling every 2 s. After 60 s it still refuses to claim failure: it says the payment may yet land and *not to pay again*, because the one thing worse than waiting is being charged twice.
+- Entry points: `RegistrationCta` on the tournament home and picker. Above the scores, unlike `InstallPrompt` — this one pays for the day. Safe by construction: the schedule cannot be generated while registration is open and a tournament cannot run without a schedule, so an open registration and a live score never coexist. Closed → says „Anmeldung geschlossen" rather than vanishing (a missing button reads as a broken site); no fee configured → renders nothing at all.
 - `/t/:id/beamer` — Big-screen mode for the clubhouse projector, outside `TournamentLayout` (no nav, no header, no max-width). The deck builds itself from live data (`buildBeamerPages`): „Jetzt läuft" (or „Als Nächstes" when nothing runs) → one page per group table → one per generated bracket; a page with nothing to show is never emitted. Cycles every 15 s (`?interval=`), `?scale=` sizes it for the room via `zoom` on the stage — the shared components are reused untouched rather than growing a fourth ScoreCard size. Space pauses, ←/→ step, F fullscreen. The dwell bar is **pine, not live** — it is a UI timer, not tournament time. Launched from the admin live header in a new tab.
 
 ### Referee (`/ref`)
@@ -146,7 +156,10 @@ Route names and UI copy are **German** (de-CH: 24-h times, `14:30`, no AM/PM). C
 ### Admin (`/admin`)
 
 - `/admin` — Tournament list, create form. Each card's **Setup** and **Live** are real buttons (the contextually relevant one primary: Live while `RUNNING`, else Setup); no link-styled actions. Delete is available unless `RUNNING` and opens a typed-name confirmation dialog — deleting a tournament destroys a whole day's results, so a plain OK is not enough.
-- `/admin/t/:id/setup` — Setup as a checklist, not a wizard (admins jump around): 1. Grunddaten 2. Kategorien/Gruppen/Teams (inline-editable tree) 3. Schiedsrichter zuweisen (per-slot table, dropdown per match, conflict-checked) 4. Spielplan. The generate button shows the returned rest stats (min/max/avg Pause pro Team) in a confirm dialog before the schedule is accepted. Invalid bracket sizes (`INVALID_BRACKET_SIZE`) render inline at the `qualifiersPerGroup` field with the valid options from the error message.
+- `/admin/t/:id/setup` — Setup as a checklist, not a wizard (admins jump around): 1. Grunddaten (incl. Startgeld in CHF ↔ Rappen, Anmeldung-Schalter, optionaler Anmeldeschluss) 2. **Anmeldungen** 3. Kategorien/Gruppen/Teams (inline-editable tree, with the unassigned pool) 4. Schiedsrichter zuweisen (per-slot table, dropdown per match, conflict-checked) 5. Spielplan.
+  - **Anmeldungen**: table (team, category, contact, status, paidAt) with a paid count badge, live on `registration.paid` — this page mounts `useTournamentEvents` for it. The only screen showing contact data, and the only one touching money, so it stays plain; email and phone are tappable, because tournament day is a phone-call day. Cancel is behind a sheet that states, next to the button, that **the money is not refunded automatically** and links the Stripe payment — an admin who assumes otherwise leaves a club out of pocket and never finds out.
+  - **Unassigned pool**: paid teams land in their category with `groupId: null` and are shown in the live accent colour above the groups, with an assign dropdown each. Never hidden when non-empty — the schedule refuses to generate while anyone sits there.
+  - The generate step renders the two registration `409`s as instructions, not toasts: „Anmeldung ist noch offen — zuerst unter Grunddaten schliessen" and „n Teams sind noch keiner Gruppe zugeteilt", *listing the teams* from `error.details.teams` (finding them otherwise means hunting through every category). The generate button shows the returned rest stats (min/max/avg Pause pro Team) in a confirm dialog before the schedule is accepted. Invalid bracket sizes (`INVALID_BRACKET_SIZE`) render inline at the `qualifiersPerGroup` field with the valid options from the error message.
 - `/admin/t/:id/live` — The dashboard. One card per pitch for the active slot: teams, referee name, ready state (pulsing until ready), live score, force-ready button. Header: current delay vs. plan, „Slot n von m", tournament start/finish controls, and a **„Laufende beenden (n)"** action that force-finishes every running match (confirm dialog lists them; reports skipped knockout draws needing penalties). Finishing the tournament while matches run surfaces the same action from the `409 MATCHES_STILL_RUNNING` state. Next slot preview underneath with assignment gaps highlighted in the live accent color — an unassigned referee 10 minutes before a slot is the #1 operational failure.
 - `/admin/referees` — Approval queue; badge in the nav on `referee.registered`. Each row has a delete action (confirm dialog); on `409 REFEREE_HAS_ASSIGNMENTS` the blocking matches are listed as links to the match editor to reassign first.
 - `/admin/t/:id/spiel/:matchId` — Match editor: reassign pitch/slot/referee, post-hoc result correction with a typed-confirmation dialog („SF1 korrigieren").
@@ -274,6 +287,22 @@ no `PushManager` — and switch „Benachrichtigungen" on. `npm run push:test --
 <referee-email>` then fires a real notification through the production send path,
 so delivery can be checked without staging a tournament.
 
+## Money
+
+The entry fee is **Rappen (integers) everywhere except the moment it is shown or
+typed** — `lib/money.ts` owns both conversions so there is one place to be right.
+`parseFloat("85.50") * 100` is `8549.999…`; truncating that undercharges the club
+by a Rappen on every single team, forever. `inputToRappen` rounds, accepts the
+comma a Swiss keyboard offers, and returns `null` rather than guessing at
+anything malformed.
+
+Note also that `entryFeeRp` / `registrationOpen` are **required** in
+`TournamentSchema`, not `.default()`. A Zod default makes input and output types
+differ, and `apiRequest`'s `ZodType<T>` collapses the two — every consumer would
+silently get the *input* type with the fields optional. Failing loudly on a
+missing field beats quietly inventing a zero fee.
+
 ## Open Items (v2)
 
 - Push covers assignment and `slot.waiting-ready`. Not yet: a nudge when the referee's slot is `WAITING_READY` but *their* match is still unready — the one operational gap notifications could still close.
+- Registration: no team-side editing, no waitlist (explicitly excluded), no deadline reminder. Refunds are initiated in the Stripe dashboard.

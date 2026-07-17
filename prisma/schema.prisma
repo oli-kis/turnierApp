@@ -52,6 +52,13 @@ enum MatchStatus {
   FINISHED
 }
 
+enum RegistrationStatus {
+  PENDING_PAYMENT
+  PAID
+  EXPIRED
+  CANCELED
+}
+
 model User {
   id            String             @id @default(cuid())
   email         String             @unique
@@ -92,10 +99,51 @@ model Tournament {
   pitchCount       Int
   status           TournamentStatus @default(DRAFT)
   createdAt        DateTime         @default(now())
+  // Self-service registration. Fee in Rappen so money is never a float;
+  // registration requires > 0. Open = registrationOpen && (deadline == null ||
+  // now < deadline).
+  entryFeeRp           Int       @default(0)
+  registrationOpen     Boolean   @default(false)
+  registrationDeadline DateTime?
   categories       Category[]
   pitches          Pitch[]
   slots            Slot[]
   matches          Match[]
+  registrations    Registration[]
+}
+
+// A team's self-service entry, from checkout to paid. The Team row is created
+// only once payment succeeds — until then this is the only record of the intent.
+//
+// Contact data lives here and nowhere else, and cascades with the tournament: it
+// is collected to run the tournament and must not outlive it (Swiss DSG).
+model Registration {
+  id              String             @id @default(cuid())
+  tournamentId    String
+  tournament      Tournament         @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  categoryId      String
+  category        Category           @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  teamName        String
+  contactName     String
+  contactEmail    String
+  contactPhone    String
+  status          RegistrationStatus @default(PENDING_PAYMENT)
+  // Fee snapshot at creation: a later fee change must not move the goalposts
+  // for a checkout the club has already quoted.
+  amountRp        Int
+  stripeSessionId String             @unique
+  // Set when the Team is created on payment success; the link that makes
+  // fulfilment idempotent.
+  teamId          String?            @unique
+  team            Team?              @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  createdAt       DateTime           @default(now())
+  paidAt          DateTime?
+  // createdAt + 30 min, mirroring the Checkout Session expiry.
+  expiresAt       DateTime
+
+  @@index([tournamentId])
+  @@index([categoryId])
+  @@index([status])
 }
 
 model Pitch {
@@ -119,6 +167,7 @@ model Category {
   groups             Group[]
   teams              Team[]
   matches            Match[]
+  registrations      Registration[]
 
   @@index([tournamentId])
 }
@@ -146,7 +195,13 @@ model Team {
   homeMatches Match[] @relation("HomeTeam")
   awayMatches Match[] @relation("AwayTeam")
   goals       Goal[]
+  registration Registration?
 
+  // Two teams with the same name in one category are indistinguishable on a
+  // scoreboard. This is also what makes the registration race safe: two payers
+  // checking out under the same name both reach fulfilment, and the loser is
+  // rejected by the database rather than by a check that raced.
+  @@unique([categoryId, name])
   @@index([categoryId])
   @@index([groupId])
 }

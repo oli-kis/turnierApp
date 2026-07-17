@@ -52,6 +52,15 @@ describe("dispatchSseEvent → query invalidation map", () => {
     expect(keysFrom(spy)).toContainEqual(["referees"]);
   });
 
+  it("registration.paid invalidates the registration list and the tournament", () => {
+    dispatchSseEvent(qc, TID, "registration.paid", { registrationId: "reg_1" });
+    const keys = keysFrom(spy);
+    // The Anmeldungen table gains a row...
+    expect(keys).toContainEqual(["registrations", TID]);
+    // ...and the new team appears in the category's unassigned pool.
+    expect(keys).toContainEqual(["tournament", TID]);
+  });
+
   it("goal.scored optimistically bumps the open match score, then invalidates", () => {
     const match: MatchDetail = {
       id: "m1",

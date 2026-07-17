@@ -11,6 +11,8 @@ import { BracketPage } from "./routes/public/BracketPage";
 import { TeamsSearch } from "./routes/public/TeamsSearch";
 import { TeamPage } from "./routes/public/TeamPage";
 import { BeamerView } from "./routes/public/BeamerView";
+import { Register } from "./routes/public/Register";
+import { RegistrationStatus } from "./routes/public/RegistrationStatus";
 
 // Auth / Referee
 import { Login } from "./routes/auth/Login";
@@ -45,6 +47,10 @@ export const router = createBrowserRouter([
           { path: "gruppe/:groupId", element: <GroupPage /> },
           { path: "tabelle", element: <BracketPage /> },
           { path: "teams", element: <TeamsSearch /> },
+          { path: "anmelden", element: <Register /> },
+          // Stripe's success_url lands here. Inside the layout on purpose: the
+          // payer has just paid and should be one tap from the tournament.
+          { path: "anmeldung/status", element: <RegistrationStatus /> },
         ],
       },
       { path: "/team/:teamId", element: <TeamPage /> },

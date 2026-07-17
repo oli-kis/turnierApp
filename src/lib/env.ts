@@ -21,6 +21,18 @@ const schema = z.object({
   VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   VAPID_SUBJECT: z.string().min(1).default("mailto:admin@fcfrick.ch"),
+  // Team self-service registration. Optional for the same reason as push: with
+  // no Stripe credentials the feature reports itself unconfigured rather than
+  // crashing a server that never intended to take money. PUBLIC_BASE_URL is
+  // where Stripe sends the payer back to — it must be the *browser's* origin,
+  // not the API's.
+  STRIPE_SECRET_KEY: z.string().min(1).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  PUBLIC_BASE_URL: z.string().url().optional(),
+  // Confirmation email. Absent → the mailer logs instead of sending; a missing
+  // receipt must never fail a payment that already went through.
+  RESEND_API_KEY: z.string().min(1).optional(),
+  MAIL_FROM: z.string().min(1).default("FC Frick Turnier <onboarding@resend.dev>"),
 });
 
 export const env = schema.parse(process.env);
